@@ -8,11 +8,20 @@ function App() {
   const [darkMode, setDarkMode] = useState(false)
   const [title, setTitle] = useState('My Todo List')
   const [editingTitle, setEditingTitle] = useState(false)
+  const [draggedItem, setDraggedItem] = useState(null)
   const editInputRef = useRef(null)
   const titleInputRef = useRef(null)
   const lastEmptyIdRef = useRef(null)
   const clickPositionRef = useRef(0)
   const canvasRef = useRef(null)
+  const listRef = useRef(null)
+  const todoRefs = useRef({})
+  const isDraggingRef = useRef(false)
+  const dragStartYRef = useRef(0)
+  const draggedIndexRef = useRef(null)
+  const draggedElementRef = useRef(null)
+  const targetIndexRef = useRef(null)
+  const swapTimerRef = useRef(null)
 
   // Create canvas for text measurement on first render
   useEffect(() => {
@@ -43,6 +52,15 @@ function App() {
       document.body.classList.remove('dark-mode')
     }
   }, [darkMode])
+
+  // Clean up any lingering drag operation on component unmount
+  useEffect(() => {
+    return () => {
+      document.body.classList.remove('is-dragging');
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   const addEmptyTodo = () => {
     const newTodo = { id: Date.now(), text: '', completed: false, isEmpty: true }
@@ -114,6 +132,13 @@ function App() {
       element.style.paddingTop = '0px'
     }
   }
+
+  // Set ref for todo item elements
+  const setTodoItemRef = (element, id) => {
+    if (element) {
+      todoRefs.current[id] = element;
+    }
+  };
   
   // Calculate cursor position by directly measuring text with click coordinates
   const getClickPosition = (e, textElement, text) => {
@@ -162,6 +187,9 @@ function App() {
   
   // Start editing task with cursor at click position
   const startTaskEdit = (todo, e) => {
+    // Don't start editing if we're dragging
+    if (isDraggingRef.current) return;
+    
     if (!canvasRef.current) return;
     const text = todo.text || '';
     // Find the actual text element (might be a child element)
@@ -175,6 +203,177 @@ function App() {
     setEditValue(text);
     setEditingId(todo.id);
   }
+
+  // New manual drag and drop implementation
+  const handleDragStart = (e, todo, index) => {
+    // Don't allow dragging when editing
+    if (editingId !== null) {
+      return;
+    }
+    
+    e.preventDefault(); // Prevent default drag behavior
+    
+    // Mark as dragging
+    isDraggingRef.current = true;
+    dragStartYRef.current = e.clientY;
+    draggedIndexRef.current = index;
+    draggedElementRef.current = todoRefs.current[todo.id];
+    setDraggedItem(todo);
+    
+    // Add dragging class to body
+    document.body.classList.add('is-dragging');
+    
+    // Add dragging class to the dragged element
+    if (draggedElementRef.current) {
+      draggedElementRef.current.classList.add('dragging');
+      
+      // Store the initial position
+      const rect = draggedElementRef.current.getBoundingClientRect();
+      draggedElementRef.current.style.position = 'fixed';
+      draggedElementRef.current.style.top = `${rect.top}px`;
+      draggedElementRef.current.style.width = `${rect.width}px`;
+      draggedElementRef.current.style.zIndex = '1000';
+      
+      // Create a placeholder to maintain spacing
+      const placeholder = document.createElement('div');
+      placeholder.className = 'drag-placeholder';
+      placeholder.style.height = `${rect.height}px`;
+      placeholder.style.width = '100%';
+      placeholder.style.margin = `${getComputedStyle(draggedElementRef.current).margin}`;
+      placeholder.setAttribute('data-placeholder', 'true');
+      draggedElementRef.current.parentNode.insertBefore(placeholder, draggedElementRef.current);
+    }
+    
+    // Add global event listeners
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
+  
+  const handleMouseMove = (e) => {
+    if (!isDraggingRef.current || draggedIndexRef.current === null) return;
+    
+    const currentY = e.clientY;
+    
+    // Move the dragged element with the cursor
+    if (draggedElementRef.current) {
+      const moveY = currentY - dragStartYRef.current;
+      const rect = draggedElementRef.current.getBoundingClientRect();
+      draggedElementRef.current.style.top = `${rect.top + moveY}px`;
+      dragStartYRef.current = currentY;
+    }
+    
+    // Find the element the cursor is currently over
+    const todoElements = Array.from(document.querySelectorAll('.todo-item:not(.dragging)'));
+    const placeholder = document.querySelector('.drag-placeholder');
+    
+    // Calculate new target position
+    let newTargetIndex = null;
+    
+    for (let i = 0; i < todoElements.length; i++) {
+      // Skip the placeholder
+      if (todoElements[i].hasAttribute('data-placeholder')) continue;
+      
+      const rect = todoElements[i].getBoundingClientRect();
+      const middleY = rect.top + rect.height / 2;
+      
+      if (currentY < middleY) {
+        newTargetIndex = i;
+        break;
+      }
+    }
+    
+    // If we're past all elements, target the end of the list
+    if (newTargetIndex === null) {
+      newTargetIndex = todoElements.length;
+    }
+    
+    // Map the visual index back to the data index
+    const visualToDataIndexMap = new Map();
+    let dataIndex = 0;
+    
+    for (let i = 0; i < todos.length; i++) {
+      if (i === draggedIndexRef.current) continue;
+      visualToDataIndexMap.set(dataIndex, i);
+      dataIndex++;
+    }
+    
+    // Convert visual index to data index
+    const targetDataIndex = newTargetIndex < visualToDataIndexMap.size 
+      ? visualToDataIndexMap.get(newTargetIndex) 
+      : todos.length;
+    
+    // If the target has changed
+    if (targetDataIndex !== targetIndexRef.current) {
+      // Update placeholder position
+      if (placeholder) {
+        placeholder.remove();
+        
+        if (newTargetIndex < todoElements.length) {
+          todoElements[newTargetIndex].parentNode.insertBefore(placeholder, todoElements[newTargetIndex]);
+        } else {
+          // Append at the end
+          listRef.current.appendChild(placeholder);
+        }
+      }
+      
+      targetIndexRef.current = targetDataIndex;
+    }
+  };
+  
+  const handleMouseUp = () => {
+    if (!isDraggingRef.current) return;
+    
+    // Remove placeholder
+    const placeholder = document.querySelector('.drag-placeholder');
+    if (placeholder) {
+      placeholder.remove();
+    }
+    
+    // Reorder the todos if the position changed
+    if (draggedIndexRef.current !== null && targetIndexRef.current !== null && 
+        draggedIndexRef.current !== targetIndexRef.current) {
+      const updatedTodos = [...todos];
+      const [movedItem] = updatedTodos.splice(draggedIndexRef.current, 1);
+      
+      // Calculate the correct insert position
+      let insertAt = targetIndexRef.current;
+      if (targetIndexRef.current > draggedIndexRef.current) {
+        insertAt--;
+      }
+      insertAt = Math.max(0, Math.min(insertAt, updatedTodos.length));
+      
+      updatedTodos.splice(insertAt, 0, movedItem);
+      setTodos(updatedTodos);
+    }
+    
+    // Reset dragged element style
+    if (draggedElementRef.current) {
+      draggedElementRef.current.style.position = '';
+      draggedElementRef.current.style.top = '';
+      draggedElementRef.current.style.width = '';
+      draggedElementRef.current.style.zIndex = '';
+    }
+    
+    // Clear styles and clean up
+    const todoElements = document.querySelectorAll('.todo-item');
+    todoElements.forEach(el => {
+      el.classList.remove('dragging', 'flow-up', 'flow-down');
+    });
+    
+    // Reset drag state
+    isDraggingRef.current = false;
+    draggedIndexRef.current = null;
+    targetIndexRef.current = null;
+    draggedElementRef.current = null;
+    setDraggedItem(null);
+    
+    // Remove dragging class from body
+    document.body.classList.remove('is-dragging');
+    
+    // Remove global event listeners
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleMouseUp);
+  };
 
   return (
     <div className={`todo-app ${darkMode ? 'dark-mode' : ''}`}>
@@ -213,10 +412,32 @@ function App() {
         <h1 onClick={startTitleEdit}>{title}</h1>
       )}
       
-      <ul className="todo-list">
-        {todos.map(todo => (
-          <li key={todo.id} className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''}`}>
-            <div className="todo-checkbox-container">
+      <ul className="todo-list" ref={listRef}>
+        {todos.length === 0 && (
+          <li className="empty-list">No tasks yet. Add one to get started!</li>
+        )}
+        
+        {todos.map((todo, index) => (
+          <li 
+            key={todo.id} 
+            className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''}`}
+            ref={(element) => setTodoItemRef(element, todo.id)}
+          >
+            <div 
+              className="drag-handle" 
+              onMouseDown={(e) => handleDragStart(e, todo, index)}
+              title="Drag to reorder"
+            >
+              <img 
+                src="/images/drag_grip.svg" 
+                alt="Drag handle" 
+                width="18" 
+                height="18"
+                className="drag-icon"
+              />
+            </div>
+            
+            <div className="todo-checkbox-container" onClick={(e) => e.stopPropagation()}>
               <label className="custom-checkbox">
                 <input
                   type="checkbox"
@@ -244,6 +465,7 @@ function App() {
                 onBlur={(e) => handleEditTodo(e, todo.id)}
                 ref={setEditInputRef}
                 placeholder="Empty task"
+                onClick={(e) => e.stopPropagation()}
               />
             ) : (
               <span 
@@ -254,7 +476,10 @@ function App() {
               </span>
             )}
             
-            <button className="delete-btn" onClick={() => deleteTodo(todo.id)}>
+            <button className="delete-btn" onClick={(e) => {
+              e.stopPropagation();
+              deleteTodo(todo.id);
+            }}>
               <img 
                 src="/images/deleteitem.svg" 
                 alt="Delete task" 

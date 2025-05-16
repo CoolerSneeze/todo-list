@@ -157,6 +157,12 @@ body.dark-mode .dark-mode-btn {
   flex-direction: column;
   align-items: center;
   margin-top: -30px;
+  position: relative;
+  z-index: 1;
+}
+
+body.is-dragging .todo-list {
+  padding-bottom: 100px; /* Add some padding at the bottom during dragging */
 }
 
 .todo-item {
@@ -164,8 +170,40 @@ body.dark-mode .dark-mode-btn {
   align-items: center;
   padding: 10px 0;
   width: 100%;
-  transition: color 0.3s ease;
+  margin-bottom: 5px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
   height: 40px; /* Increased height for better vertical centering */
+  cursor: default;
+  position: relative;
+  border-radius: 6px;
+  z-index: 1;
+  background-color: transparent;
+  box-sizing: border-box;
+  will-change: transform;
+}
+
+.todo-item:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+  z-index: 2;
+}
+
+body.dark-mode .todo-item:hover {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.todo-item.dragging {
+  opacity: 0.9;
+  cursor: grabbing;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.19), 0 6px 6px rgba(0, 0, 0, 0.23);
+  z-index: 1000;
+  background-color: rgba(255, 255, 255, 0.95);
+  transform-origin: center;
+  pointer-events: none;
+}
+
+body.dark-mode .todo-item.dragging {
+  background-color: rgba(40, 40, 40, 0.95);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3), 0 6px 6px rgba(0, 0, 0, 0.33);
 }
 
 .todo-item.completed span.todo-text {
@@ -176,6 +214,36 @@ body.dark-mode .todo-item.completed span.todo-text {
   color: inherit;
 }
 
+.drag-handle {
+  width: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-right: 8px;
+  height: 100%;
+  cursor: grab;
+  opacity: 0.6;
+  transition: opacity 0.2s ease, transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.drag-handle:hover {
+  opacity: 1;
+  transform: scale(1.1);
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.drag-icon {
+  display: block;
+  transition: filter 0.3s ease;
+}
+
+body.dark-mode .drag-icon {
+  filter: invert(1);
+}
+
 .todo-checkbox-container {
   width: 24px;
   display: flex;
@@ -183,6 +251,7 @@ body.dark-mode .todo-item.completed span.todo-text {
   align-items: center;
   margin-right: 15px;
   height: 100%;
+  cursor: pointer;
 }
 
 .custom-checkbox {
@@ -286,4 +355,61 @@ body.dark-mode .delete-btn {
 
 body.dark-mode .empty-list {
   color: #666;
+}
+
+/* Animation for items that move up or down during drag */
+@keyframes flow-up {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-100%); }
+}
+
+@keyframes flow-down {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(100%); }
+}
+
+.todo-item.flow-up {
+  transform: translateY(-100%);
+  transition: transform 0.15s ease;
+}
+
+.todo-item.flow-down {
+  transform: translateY(100%);
+  transition: transform 0.15s ease;
+}
+
+/* Scrollbar styles for a cleaner look */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+}
+
+body.dark-mode ::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.drag-handle {
+  cursor: grab !important; /* Force grab cursor */
+}
+
+.drag-handle:active {
+  cursor: grabbing !important; /* Force grabbing cursor when active */
+}
+
+.drag-placeholder {
+  border-radius: 6px;
+  background-color: rgba(0, 0, 0, 0.05);
+  margin-bottom: 5px;
+}
+
+body.dark-mode .drag-placeholder {
+  background-color: rgba(255, 255, 255, 0.05);
 }
