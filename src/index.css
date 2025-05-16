@@ -1,0 +1,81 @@
+:root {
+  font-family: 'Covered By Your Grace', cursive;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #333;
+  background-color: #ffffff;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #ffffff;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+body.dark-mode {
+  background-color: #121212;
+  color: #e0e0e0;
+}
+
+#root {
+  width: 100%;
+}
+
+h1 {
+  font-size: 2.8em;
+  line-height: 1.1;
+  margin-bottom: 1.5rem;
+  margin-top: 0;
+  text-align: center;
+  padding-top: 15px;
+}
+
+button {
+  border: none;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-family: 'Covered By Your Grace', cursive;
+  background: transparent;
+  cursor: pointer;
+  transform-origin: center;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  backface-visibility: hidden;
+  -webkit-font-smoothing: subpixel-antialiased;
+}
+
+button:hover {
+  transform: scale(1.1);
+}
+
+body.dark-mode button {
+  background: transparent;
+  border: none;
+  color: #e0e0e0;
+}
+
+body.dark-mode button:hover {
+  background: transparent;
+  border: none;
+}
+
+input {
+  font-family: 'Covered By Your Grace', cursive;
+  font-size: 1.2em;
+  transition: color 0.3s ease;
+}
+
+body.dark-mode input {
+  color: #e0e0e0;
+  background-color: transparent;
+}
+
+input[type="checkbox"] {
+  accent-color: #555;
+}
+
+body.dark-mode input[type="checkbox"] {
+  accent-color: #888;
+}

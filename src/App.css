@@ -1,0 +1,289 @@
+#root {
+  max-width: 500px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+  width: 100%;
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
+.todo-app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  position: relative;
+  transition: color 0.3s ease;
+}
+
+.todo-form {
+  display: flex;
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.todo-input-container {
+  display: flex;
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.todo-input-container.hidden {
+  display: none;
+}
+
+h1 {
+  cursor: text;
+  height: 75px;
+  padding: 0;
+  padding-top: 14px;
+  padding-bottom: 0;
+  margin-bottom: 1.5rem;
+  margin-top: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  top: -35px;
+}
+
+.title-edit-input {
+  font-family: 'Covered By Your Grace', cursive;
+  font-size: 2.8em;
+  font-weight: bold;
+  text-align: center;
+  padding: 0;
+  padding-top: 14px;
+  padding-bottom: 0;
+  margin: 0;
+  margin-bottom: 1.5rem;
+  margin-top: 0;
+  border: none;
+  background-color: transparent;
+  outline: none;
+  width: 100%;
+  line-height: 1.1;
+  transition: color 0.3s ease;
+  color: inherit;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  top: -35px;
+  height: 75px;
+}
+
+body.dark-mode .title-edit-input {
+  color: #e0e0e0;
+}
+
+.top-buttons {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  display: flex;
+  gap: 10px;
+  z-index: 10;
+}
+
+.add-btn, .dark-mode-btn {
+  background: none;
+  border: none;
+  font-size: 1.5em;
+  cursor: pointer;
+  padding: 4px 12px;
+  transform-origin: center;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  backface-visibility: hidden;
+  -webkit-font-smoothing: subpixel-antialiased;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.add-btn:hover, .dark-mode-btn:hover {
+  transform: scale(1.1);
+}
+
+.mode-icon, .add-icon, .delete-icon {
+  display: block;
+  transition: filter 0.3s ease;
+}
+
+body.dark-mode .mode-icon,
+body.dark-mode .checkbox-image,
+body.dark-mode .add-icon,
+body.dark-mode .delete-icon {
+  filter: invert(1);
+}
+
+body.dark-mode .add-btn, 
+body.dark-mode .dark-mode-btn {
+  background: transparent;
+  border: none;
+}
+
+.todo-list {
+  width: 80%;
+  max-width: 500px;
+  list-style: none;
+  padding: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: -30px;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 0;
+  width: 100%;
+  transition: color 0.3s ease;
+  height: 40px; /* Increased height for better vertical centering */
+}
+
+.todo-item.completed span.todo-text {
+  color: inherit;
+}
+
+body.dark-mode .todo-item.completed span.todo-text {
+  color: inherit;
+}
+
+.todo-checkbox-container {
+  width: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-right: 15px;
+  height: 100%;
+}
+
+.custom-checkbox {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+}
+
+.hidden-checkbox {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+
+.checkbox-image {
+  display: block;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1), filter 0.3s ease;
+}
+
+.custom-checkbox:hover .checkbox-image {
+  transform: scale(1.1);
+}
+
+.todo-text {
+  flex-grow: 1;
+  font-size: 1.3em;
+  cursor: text;
+  padding: 0;
+  height: 100%;
+  transition: color 0.3s ease;
+  letter-spacing: 0.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  line-height: 40px; /* Match height of todo-item */
+}
+
+.placeholder-text {
+  color: #aaa;
+}
+
+body.dark-mode .placeholder-text {
+  color: #666;
+}
+
+.edit-input {
+  flex-grow: 1;
+  font-family: 'Covered By Your Grace', cursive;
+  font-size: 1.3em;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  outline: none;
+  transition: color 0.3s ease;
+  letter-spacing: 0.5px;
+  height: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  line-height: 40px; /* Match height of todo-item */
+  display: flex;
+  align-items: center;
+}
+
+.delete-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 8px;
+  transform-origin: center;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  backface-visibility: hidden;
+  -webkit-font-smoothing: subpixel-antialiased;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.delete-btn:hover {
+  transform: scale(1.1);
+}
+
+body.dark-mode .delete-btn {
+  background: transparent;
+  border: none;
+}
+
+.empty-list {
+  color: #aaa;
+  font-style: italic;
+  text-align: center;
+  margin-top: 20px;
+  font-size: 1.2em;
+  transition: color 0.3s ease;
+}
+
+body.dark-mode .empty-list {
+  color: #666;
+}
