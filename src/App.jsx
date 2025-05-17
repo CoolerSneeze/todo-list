@@ -9,6 +9,7 @@ function App() {
   const [title, setTitle] = useState('My Todo List')
   const [editingTitle, setEditingTitle] = useState(false)
   const [draggedItem, setDraggedItem] = useState(null)
+  const [showMenu, setShowMenu] = useState(false)
   const editInputRef = useRef(null)
   const titleInputRef = useRef(null)
   const lastEmptyIdRef = useRef(null)
@@ -61,6 +62,10 @@ function App() {
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, []);
+
+  const toggleMenu = () => {
+    setShowMenu(!showMenu);
+  }
 
   const addEmptyTodo = () => {
     const newTodo = { id: Date.now(), text: '', completed: false, isEmpty: true }
@@ -206,9 +211,22 @@ function App() {
 
   // New manual drag and drop implementation
   const handleDragStart = (e, todo, index) => {
-    // Don't allow dragging when editing
+    // Instead of preventing dragging when editing, just stop editing
     if (editingId !== null) {
-      return;
+      // If we're editing the current item being dragged, apply the edit first
+      if (editingId === todo.id) {
+        // Update the todo with current edit value
+        setTodos(todos.map(t => 
+          t.id === editingId ? { 
+            ...t, 
+            text: editValue.trim(),
+            isEmpty: editValue.trim() === '' 
+          } : t
+        ));
+      }
+      
+      // Exit edit mode
+      setEditingId(null);
     }
     
     e.preventDefault(); // Prevent default drag behavior
@@ -304,6 +322,15 @@ function App() {
     
     // If the target has changed
     if (targetDataIndex !== targetIndexRef.current) {
+      // Store positions before placeholder movement
+      const initialPositions = new Map();
+      todoElements.forEach(el => {
+        if (!el.hasAttribute('data-placeholder')) {
+          const rect = el.getBoundingClientRect();
+          initialPositions.set(el, { top: rect.top, left: rect.left });
+        }
+      });
+      
       // Update placeholder position
       if (placeholder) {
         placeholder.remove();
@@ -315,6 +342,31 @@ function App() {
           listRef.current.appendChild(placeholder);
         }
       }
+      
+      // Compare final positions and apply FLIP animation
+      requestAnimationFrame(() => {
+        todoElements.forEach(el => {
+          if (!el.hasAttribute('data-placeholder') && initialPositions.has(el)) {
+            const initialPos = initialPositions.get(el);
+            const finalRect = el.getBoundingClientRect();
+            
+            // Calculate the difference in position
+            const deltaY = initialPos.top - finalRect.top;
+            
+            if (Math.abs(deltaY) > 1) { // Only animate if there's actual movement
+              // First: set to initial position
+              el.style.transform = `translateY(${deltaY}px)`;
+              el.style.transition = 'none';
+              
+              // Then animate to final position (FLIP technique)
+              requestAnimationFrame(() => {
+                el.style.transition = 'transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)';
+                el.style.transform = 'translateY(0)';
+              });
+            }
+          }
+        });
+      });
       
       targetIndexRef.current = targetDataIndex;
     }
@@ -332,6 +384,26 @@ function App() {
     // Reorder the todos if the position changed
     if (draggedIndexRef.current !== null && targetIndexRef.current !== null && 
         draggedIndexRef.current !== targetIndexRef.current) {
+      
+      // Apply final animation
+      const todoElements = document.querySelectorAll('.todo-item:not(.dragging)');
+      todoElements.forEach(el => {
+        // Wait for any ongoing animations to complete
+        const handleTransitionEnd = () => {
+          el.removeEventListener('transitionend', handleTransitionEnd);
+          el.style.transition = '';
+          el.style.transform = '';
+        };
+        
+        el.addEventListener('transitionend', handleTransitionEnd);
+        
+        // If no transition in progress, clean up anyway
+        if (!el.style.transform || el.style.transform === 'none' || el.style.transform === 'translateY(0px)') {
+          el.style.transition = '';
+          el.style.transform = '';
+        }
+      });
+      
       const updatedTodos = [...todos];
       const [movedItem] = updatedTodos.splice(draggedIndexRef.current, 1);
       
@@ -357,7 +429,7 @@ function App() {
     // Clear styles and clean up
     const todoElements = document.querySelectorAll('.todo-item');
     todoElements.forEach(el => {
-      el.classList.remove('dragging', 'flow-up', 'flow-down');
+      el.classList.remove('dragging');
     });
     
     // Reset drag state
@@ -378,119 +450,158 @@ function App() {
   return (
     <div className={`todo-app ${darkMode ? 'dark-mode' : ''}`}>
       <div className="top-buttons">
-        <button className="add-btn" onClick={addEmptyTodo}>
-          <img 
-            src="/images/additem.svg" 
-            alt="Add new task" 
-            width="24" 
-            height="24"
-            className="add-icon"
-          />
-        </button>
-        <button className="dark-mode-btn" onClick={toggleDarkMode}>
-          <img 
-            src={darkMode ? "/images/lightmode.svg" : "/images/darkmode.svg"} 
-            alt={darkMode ? "Switch to light mode" : "Switch to dark mode"} 
-            width="24" 
-            height="24"
-            className="mode-icon"
-          />
-        </button>
-      </div>
-      
-      {editingTitle ? (
-        <input
-          type="text"
-          className="title-edit-input"
-          defaultValue={title}
-          onKeyDown={(e) => e.key === 'Enter' && handleTitleEdit(e)}
-          onBlur={handleTitleEdit}
-          ref={titleInputRef}
-          autoComplete="off"
-        />
-      ) : (
-        <h1 onClick={startTitleEdit}>{title}</h1>
-      )}
-      
-      <ul className="todo-list" ref={listRef}>
-        {todos.length === 0 && (
-          <li className="empty-list">No tasks yet. Add one to get started!</li>
-        )}
-        
-        {todos.map((todo, index) => (
-          <li 
-            key={todo.id} 
-            className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''}`}
-            ref={(element) => setTodoItemRef(element, todo.id)}
-          >
-            <div 
-              className="drag-handle" 
-              onMouseDown={(e) => handleDragStart(e, todo, index)}
-              title="Drag to reorder"
-            >
+        {!showMenu ? (
+          <>
+            <button className="menu-btn" onClick={toggleMenu}>
               <img 
-                src="/images/drag_grip.svg" 
-                alt="Drag handle" 
-                width="18" 
-                height="18"
-                className="drag-icon"
-              />
-            </div>
-            
-            <div className="todo-checkbox-container" onClick={(e) => e.stopPropagation()}>
-              <label className="custom-checkbox">
-                <input
-                  type="checkbox"
-                  className="hidden-checkbox"
-                  checked={todo.completed}
-                  onChange={() => toggleTodo(todo.id)}
-                />
-                <img 
-                  src={todo.completed ? "/images/checkboxfull.svg" : "/images/checkboxempty.svg"} 
-                  alt={todo.completed ? "Checked" : "Unchecked"} 
-                  className="checkbox-image" 
-                  width="20" 
-                  height="20"
-                />
-              </label>
-            </div>
-            
-            {editingId === todo.id ? (
-              <input
-                type="text"
-                className="edit-input"
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleEditTodo(e, todo.id)}
-                onBlur={(e) => handleEditTodo(e, todo.id)}
-                ref={setEditInputRef}
-                placeholder="Empty task"
-                onClick={(e) => e.stopPropagation()}
-              />
-            ) : (
-              <span 
-                className="todo-text" 
-                onClick={(e) => startTaskEdit(todo, e)}
-              >
-                {todo.text || <span className="placeholder-text">Empty task</span>}
-              </span>
-            )}
-            
-            <button className="delete-btn" onClick={(e) => {
-              e.stopPropagation();
-              deleteTodo(todo.id);
-            }}>
-              <img 
-                src="/images/deleteitem.svg" 
-                alt="Delete task" 
-                width="18" 
-                height="18"
-                className="delete-icon"
+                src="/images/menu_button.svg" 
+                alt="Menu" 
+                width="24" 
+                height="24"
+                className="menu-icon"
               />
             </button>
-          </li>
-        ))}
-      </ul>
+            <button className="add-btn" onClick={addEmptyTodo}>
+              <img 
+                src="/images/additem.svg" 
+                alt="Add new task" 
+                width="24" 
+                height="24"
+                className="add-icon"
+              />
+            </button>
+            <button className="dark-mode-btn" onClick={toggleDarkMode}>
+              <img 
+                src={darkMode ? "/images/lightmode.svg" : "/images/darkmode.svg"} 
+                alt={darkMode ? "Switch to light mode" : "Switch to dark mode"} 
+                width="24" 
+                height="24"
+                className="mode-icon"
+              />
+            </button>
+          </>
+        ) : (
+          <button className="close-menu-btn" onClick={toggleMenu}>
+            <img 
+              src="/images/deleteitem.svg" 
+              alt="Close menu" 
+              width="24" 
+              height="24"
+              className="close-icon"
+            />
+          </button>
+        )}
+      </div>
+      
+      {!showMenu ? (
+        <>
+          {editingTitle ? (
+            <input
+              type="text"
+              className="title-edit-input"
+              defaultValue={title}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter') handleTitleEdit(e);
+              }}
+              onBlur={handleTitleEdit}
+              ref={titleInputRef}
+              autoComplete="off"
+              onMouseDown={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <h1 onClick={startTitleEdit}>{title}</h1>
+          )}
+          
+          <ul className="todo-list" ref={listRef}>
+            {todos.length === 0 && (
+              <li className="empty-list">No tasks yet. Add one to get started!</li>
+            )}
+            
+            {todos.map((todo, index) => (
+              <li 
+                key={todo.id} 
+                className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''}`}
+                ref={(element) => setTodoItemRef(element, todo.id)}
+              >
+                <div 
+                  className="drag-handle" 
+                  onMouseDown={(e) => handleDragStart(e, todo, index)}
+                  title="Drag to reorder"
+                >
+                  <img 
+                    src="/images/drag_grip.svg" 
+                    alt="Drag handle" 
+                    width="18" 
+                    height="18"
+                    className="drag-icon"
+                  />
+                </div>
+                
+                <div className="todo-checkbox-container" onClick={(e) => e.stopPropagation()}>
+                  <label className="custom-checkbox">
+                    <input
+                      type="checkbox"
+                      className="hidden-checkbox"
+                      checked={todo.completed}
+                      onChange={() => toggleTodo(todo.id)}
+                    />
+                    <img 
+                      src={todo.completed ? "/images/checkboxfull.svg" : "/images/checkboxempty.svg"} 
+                      alt={todo.completed ? "Checked" : "Unchecked"} 
+                      className="checkbox-image" 
+                      width="20" 
+                      height="20"
+                    />
+                  </label>
+                </div>
+                
+                {editingId === todo.id ? (
+                  <input
+                    type="text"
+                    className="edit-input"
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') handleEditTodo(e, todo.id);
+                    }}
+                    onBlur={(e) => handleEditTodo(e, todo.id)}
+                    ref={setEditInputRef}
+                    placeholder="Empty task"
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <span 
+                    className="todo-text" 
+                    onClick={(e) => startTaskEdit(todo, e)}
+                  >
+                    {todo.text || <span className="placeholder-text">Empty task</span>}
+                  </span>
+                )}
+                
+                <button className="delete-btn" onClick={(e) => {
+                  e.stopPropagation();
+                  deleteTodo(todo.id);
+                }}>
+                  <img 
+                    src="/images/deleteitem.svg" 
+                    alt="Delete task" 
+                    width="18" 
+                    height="18"
+                    className="delete-icon"
+                  />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <div className="menu-screen">
+          {/* Empty menu screen */}
+        </div>
+      )}
     </div>
   )
 }
