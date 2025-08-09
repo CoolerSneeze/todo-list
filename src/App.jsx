@@ -457,23 +457,11 @@ function App() {
     // Add dragging class to the dragged element
     if (draggedElementRef.current) {
       draggedElementRef.current.classList.add('dragging');
-      
-      // Store the initial position
-      const rect = draggedElementRef.current.getBoundingClientRect();
-      draggedElementRef.current.style.position = 'fixed';
-      draggedElementRef.current.style.top = `${rect.top}px`;
-      draggedElementRef.current.style.left = `${rect.left}px`;
-      draggedElementRef.current.style.width = `${rect.width}px`;
       draggedElementRef.current.style.zIndex = '1000';
       
-      // Create a placeholder to maintain spacing
-      const placeholder = document.createElement('div');
-      placeholder.className = 'drag-placeholder';
-      placeholder.style.height = `${rect.height}px`;
-      placeholder.style.width = '100%';
-      placeholder.style.margin = `${getComputedStyle(draggedElementRef.current).margin}`;
-      placeholder.setAttribute('data-placeholder', 'true');
-      draggedElementRef.current.parentNode.insertBefore(placeholder, draggedElementRef.current);
+      // For vertical dragging, we need position: fixed and placeholder
+      // For horizontal dragging, we'll handle positioning differently
+      // We'll determine the direction later and adjust accordingly
     }
     
     // Add global event listeners
@@ -499,9 +487,38 @@ function App() {
         // Set direction based on which axis has more movement
         dragDirectionRef.current = deltaX > deltaY ? 'horizontal' : 'vertical';
         
-        // Add appropriate class to dragged element
+        // Add appropriate class to dragged element and set up positioning
         if (draggedElementRef.current) {
           draggedElementRef.current.classList.add(`dragging-${dragDirectionRef.current}`);
+          
+          // Set up positioning based on drag direction
+          if (dragDirectionRef.current === 'vertical') {
+            // For vertical dragging, use position: fixed and create placeholder
+            const rect = draggedElementRef.current.getBoundingClientRect();
+            
+            // Check if this is an indented item to avoid double-offset
+            const draggedItem = todos[draggedIndexRef.current];
+            const isIndented = !!draggedItem.isIndented;
+            const leftPosition = isIndented ? rect.left - 60 : rect.left; // Subtract CSS transform offset
+            
+            draggedElementRef.current.style.position = 'fixed';
+            draggedElementRef.current.style.top = `${rect.top}px`;
+            draggedElementRef.current.style.left = `${leftPosition}px`;
+            draggedElementRef.current.style.width = `${rect.width}px`;
+            
+            // Create a placeholder to maintain spacing
+            const placeholder = document.createElement('div');
+            placeholder.className = 'drag-placeholder';
+            placeholder.style.height = `${rect.height}px`;
+            placeholder.style.width = '100%';
+            placeholder.style.margin = `${getComputedStyle(draggedElementRef.current).margin}`;
+            placeholder.setAttribute('data-placeholder', 'true');
+            draggedElementRef.current.parentNode.insertBefore(placeholder, draggedElementRef.current);
+          } else if (dragDirectionRef.current === 'horizontal') {
+            // For horizontal dragging, keep element in normal flow
+            // No position: fixed, no placeholder - just use transform
+            draggedElementRef.current.style.transition = 'none';
+          }
         }
       }
     }
@@ -515,27 +532,32 @@ function App() {
         draggedElementRef.current.style.top = `${rect.top + moveY}px`;
         dragStartYRef.current = currentY;
       } else if (dragDirectionRef.current === 'horizontal') {
-        // Horizontal movement - controlled, smooth movement
+        // Horizontal movement - simple smooth sliding in normal flow
         const dragEl = draggedElementRef.current;
-        const initialRect = dragEl.getBoundingClientRect();
-        
-        // Define the indentation limits
-        const startX = 0; // Starting position (no indent)
-        const maxIndentX = 40; // Maximum indent position
         
         // Calculate movement relative to drag start position
         const totalMoveX = currentX - dragStartXRef.current;
         
-        // Store the current drag position
-        dragOffsetXRef.current = Math.max(0, Math.min(maxIndentX, totalMoveX));
+        // Get the dragged item to check if it's currently indented
+        const draggedItem = todos[draggedIndexRef.current];
+        const isCurrentlyIndented = !!draggedItem.isIndented;
         
-        // Apply a smooth transform instead of changing left position
-        // This keeps the element in the flow and prevents it from flying off
-        const translateX = Math.max(0, Math.min(maxIndentX, totalMoveX));
-        dragEl.style.transform = `translateX(${translateX}px)`;
+        // Base offset for indented items (they have CSS transform: translateX(60px))
+        const baseOffset = isCurrentlyIndented ? 60 : 0;
         
-        // Provide visual feedback about indentation threshold without updating the database
-        if (translateX > 20) {
+        // Allow movement to cover the full indentation range (60px)
+        const maxIndentX = 60;
+        const minIndentX = -60;
+        
+        // Simple clamped movement
+        dragOffsetXRef.current = Math.max(minIndentX, Math.min(maxIndentX, totalMoveX));
+        
+        // Apply transform: base offset + drag offset
+        const totalTransform = baseOffset + dragOffsetXRef.current;
+        dragEl.style.transform = `translateX(${totalTransform}px)`;
+        
+        // Visual feedback for indentation threshold
+        if (dragOffsetXRef.current > 30) {
           dragEl.classList.add('indent-preview');
         } else {
           dragEl.classList.remove('indent-preview');
@@ -625,14 +647,19 @@ function App() {
             const deltaY = initialPos.top - finalRect.top;
             
             if (Math.abs(deltaY) > 1) { // Only animate if there's actual movement
-              // First: set to initial position
-              el.style.transform = `translateY(${deltaY}px)`;
+              // Check if this element is indented to preserve horizontal offset
+              const isIndented = el.classList.contains('indented');
+              const baseTransform = isIndented ? 'translateX(60px)' : '';
+              
+              // First: set to initial position (preserve horizontal transform)
+              const initialTransform = baseTransform ? `${baseTransform} translateY(${deltaY}px)` : `translateY(${deltaY}px)`;
+              el.style.transform = initialTransform;
               el.style.transition = 'none';
               
               // Then animate to final position (FLIP technique)
               requestAnimationFrame(() => {
                 el.style.transition = 'transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)';
-                el.style.transform = 'translateY(0)';
+                el.style.transform = baseTransform; // Return to base transform (preserves indentation)
               });
             }
           }
@@ -661,7 +688,16 @@ function App() {
     // Handle indentation changes
     if (dragDirectionRef.current === 'horizontal') {
       // Determine final indentation based on horizontal movement
-      const isIndented = dragOffsetXRef.current > 20; // If moved more than 20px, indent
+      const wasIndented = !!draggedItem.isIndented;
+      let shouldBeIndented;
+      
+      if (wasIndented) {
+        // If item was indented, unindent if dragged left more than 30px
+        shouldBeIndented = dragOffsetXRef.current > -30;
+      } else {
+        // If item was not indented, indent if dragged right more than 30px
+        shouldBeIndented = dragOffsetXRef.current > 30;
+      }
       
       // Compare with initial state to see if it changed
       const initialState = draggedItem.initialIndentationState || {
@@ -670,8 +706,8 @@ function App() {
       };
       
       // Only update if indentation state changed
-      if (isIndented !== initialState.isIndented) {
-        if (isIndented && draggedIndexRef.current > 0) {
+      if (shouldBeIndented !== initialState.isIndented) {
+        if (shouldBeIndented && draggedIndexRef.current > 0) {
           // Find the previous item (potential parent)
           const parentIndex = draggedIndexRef.current - 1;
           const parentId = Number(todos[parentIndex].id);
@@ -679,12 +715,12 @@ function App() {
           // Update todos with new indentation
           updatedTodos = updatedTodos.map(todo => 
             Number(todo.id) === Number(draggedItem.id) 
-              ? { ...todo, isIndented, parentId } 
+              ? { ...todo, isIndented: shouldBeIndented, parentId } 
               : todo
           );
           
           indentationChanged = true;
-        } else if (!isIndented && draggedItem.isIndented) {
+        } else if (!shouldBeIndented && draggedItem.isIndented) {
           // Remove indentation
           updatedTodos = updatedTodos.map(todo => 
             Number(todo.id) === Number(draggedItem.id) 
@@ -716,11 +752,22 @@ function App() {
       // Check for possible parent-child relationship
       const previousItem = insertAt > 0 ? updatedTodos[insertAt - 1] : null;
       
-      // Keep existing parent-child relationships unless we move to the top
+      // Validate parent-child relationships
       if (insertAt === 0) {
         // If moved to the top, remove indentation
         movedItem.isIndented = false;
         movedItem.parentId = null;
+      } else if (movedItem.isIndented) {
+        // If item is indented, validate that it can have the previous item as parent
+        if (!previousItem || previousItem.isIndented) {
+          // Previous item is also indented (child), so this item can't be indented
+          // OR no previous item exists, so remove indentation
+          movedItem.isIndented = false;
+          movedItem.parentId = null;
+        } else {
+          // Previous item is not indented (parent), so update parent relationship
+          movedItem.parentId = Number(previousItem.id);
+        }
       }
       
       // Insert the moved item at the new position
@@ -728,8 +775,58 @@ function App() {
       positionsChanged = true;
     }
     
+    // Post-process: Fix any invalid parent-child relationships after reordering
+    if (positionsChanged) {
+      let relationshipsFixed = false;
+      updatedTodos = updatedTodos.map((todo, index) => {
+        if (todo.isIndented) {
+          // Check if this indented item has a valid parent
+          if (index === 0) {
+            // First item can't be indented
+            relationshipsFixed = true;
+            return { ...todo, isIndented: false, parentId: null };
+          } else {
+            const previousItem = updatedTodos[index - 1];
+            if (previousItem.isIndented) {
+              // Previous item is also indented (child), so this can't be indented
+              relationshipsFixed = true;
+              return { ...todo, isIndented: false, parentId: null };
+            } else {
+              // Previous item is valid parent, update parentId if needed
+              if (todo.parentId !== Number(previousItem.id)) {
+                relationshipsFixed = true;
+                return { ...todo, parentId: Number(previousItem.id) };
+              }
+            }
+          }
+        }
+        return todo;
+      });
+      
+      if (relationshipsFixed) {
+        indentationChanged = true;
+      }
+    }
+    
     // Update the database if anything changed
     if (positionsChanged || indentationChanged) {
+      // For horizontal drags, we need to prevent visual jumping
+      let compensatingTransform = 0;
+      if (dragDirectionRef.current === 'horizontal' && indentationChanged) {
+        // Calculate the visual jump that will occur when CSS indentation is applied/removed
+        const draggedItem = todos[draggedIndexRef.current];
+        const wasIndented = !!draggedItem.isIndented;
+        const willBeIndented = updatedTodos.find(t => Number(t.id) === Number(draggedItem.id))?.isIndented;
+        
+        if (!wasIndented && willBeIndented) {
+          // Item is becoming indented: CSS will add 60px offset, so compensate with +60px to maintain position
+          compensatingTransform = 60;
+        } else if (wasIndented && !willBeIndented) {
+          // Item is becoming unindented: CSS will remove 60px offset, so compensate with -60px to maintain position
+          compensatingTransform = -60;
+        }
+      }
+      
       // Ensure all todos have proper position values
       const todosWithUpdatedPositions = updatedTodos.map((todo, index) => ({
         ...todo,
@@ -739,12 +836,24 @@ function App() {
       // Update UI state immediately
       setTodos(todosWithUpdatedPositions);
       
+      // Apply compensating transform to prevent visual jump
+      if (compensatingTransform !== 0 && draggedElementRef.current) {
+        draggedElementRef.current.style.transform = `translateX(${compensatingTransform}px)`;
+        
+        // Remove the compensating transform after a brief moment to let it settle naturally
+        requestAnimationFrame(() => {
+          if (draggedElementRef.current) {
+            draggedElementRef.current.style.transition = 'transform 0.1s ease-out';
+            draggedElementRef.current.style.transform = '';
+          }
+        });
+      }
+      
       // Update positions in database - this includes parent-child relationships
       db.updateTodoPositions(todosWithUpdatedPositions)
         .then(serverTodos => {
           if (serverTodos && Array.isArray(serverTodos)) {
             console.log('Server confirmed position update');
-            // We don't need to update the UI here since we've already updated it
           }
         })
         .catch(error => {
@@ -765,7 +874,13 @@ function App() {
       draggedElementRef.current.style.left = '';
       draggedElementRef.current.style.width = '';
       draggedElementRef.current.style.zIndex = '';
-      draggedElementRef.current.style.transform = '';
+      
+      // For horizontal drags with indentation changes, the transform is handled above
+      // For all other cases, clear the transform
+      if (!(dragDirectionRef.current === 'horizontal' && indentationChanged)) {
+        draggedElementRef.current.style.transform = '';
+      }
+      
       draggedElementRef.current.classList.remove('indent-preview');
     }
     
