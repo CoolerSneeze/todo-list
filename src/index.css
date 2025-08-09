@@ -70,11 +70,11 @@ input {
 body.dark-mode input {
   color: #e0e0e0;
   background-color: transparent;
-}
+  }
 
 input[type="checkbox"] {
   accent-color: #555;
-}
+  }
 
 body.dark-mode input[type="checkbox"] {
   accent-color: #888;

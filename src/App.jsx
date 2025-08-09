@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import './App.css'
+import db from './db.js'
 
 function App() {
   const [todos, setTodos] = useState([])
@@ -10,6 +11,7 @@ function App() {
   const [editingTitle, setEditingTitle] = useState(false)
   const [draggedItem, setDraggedItem] = useState(null)
   const [showMenu, setShowMenu] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
   const editInputRef = useRef(null)
   const titleInputRef = useRef(null)
   const lastEmptyIdRef = useRef(null)
@@ -19,10 +21,42 @@ function App() {
   const todoRefs = useRef({})
   const isDraggingRef = useRef(false)
   const dragStartYRef = useRef(0)
+  const dragStartXRef = useRef(0) // Track X position for horizontal movement
   const draggedIndexRef = useRef(null)
   const draggedElementRef = useRef(null)
   const targetIndexRef = useRef(null)
   const swapTimerRef = useRef(null)
+  const dragDirectionRef = useRef(null) // 'vertical' or 'horizontal'
+  const dragOffsetXRef = useRef(0) // Track horizontal offset
+  const dragThresholdPassed = useRef(false) // Threshold for determining drag direction
+
+  // Load data from database on first render
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // Load settings
+        const settings = await db.getSettings();
+        setDarkMode(!!settings.dark_mode);
+        setTitle(settings.title);
+        
+        // Load todos
+        const loadedTodos = await db.getAllTodos();
+        
+        // Sort todos by position
+        const sortedTodos = [...loadedTodos].sort((a, b) => 
+          (Number(a.position) || 0) - (Number(b.position) || 0)
+        );
+        
+        setTodos(sortedTodos);
+      } catch (error) {
+        console.error('Error loading data from database:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    loadData();
+  }, []);
 
   // Create canvas for text measurement on first render
   useEffect(() => {
@@ -52,7 +86,16 @@ function App() {
     } else {
       document.body.classList.remove('dark-mode')
     }
-  }, [darkMode])
+  }, [darkMode]);
+
+  // Save dark mode setting to database when it changes
+  useEffect(() => {
+    if (!isLoading) {
+      db.updateDarkMode(darkMode).catch(error => {
+        console.error('Error saving dark mode setting:', error);
+      });
+    }
+  }, [darkMode, isLoading]);
 
   // Clean up any lingering drag operation on component unmount
   useEffect(() => {
@@ -67,66 +110,217 @@ function App() {
     setShowMenu(!showMenu);
   }
 
-  const addEmptyTodo = () => {
-    const newTodo = { id: Date.now(), text: '', completed: false, isEmpty: true }
-    setTodos([...todos, newTodo])
+  const addEmptyTodo = async () => {
+    // Prevent multiple rapid clicks by checking if we're already creating a todo
+    if (editingId !== null && lastEmptyIdRef.current !== null) {
+      console.log('Already creating/editing a todo, ignoring additional clicks');
+      return;
+    }
     
-    // Only set editing for the new item if we're not currently editing
-    if (editingId === null) {
-      setEditingId(newTodo.id)
-      setEditValue('')
-      lastEmptyIdRef.current = newTodo.id
+    // Calculate the position for the new todo
+    const position = todos.length > 0 
+      ? Math.max(...todos.map(t => Number(t.position) || 0)) + 1 
+      : 1;
+    
+    const newTodo = { 
+      text: '', 
+      completed: false, 
+      isEmpty: true, 
+      parentId: null, 
+      isIndented: false,
+      position: position
+    }
+    
+    try {
+      console.log('Creating single new todo at position', position);
+      
+      // Add to database
+      const savedTodo = await db.createTodo(newTodo);
+      
+      // Update state with the new todo
+      setTodos(prevTodos => [...prevTodos, savedTodo]);
+      
+      // Set editing mode for the new item
+      setEditingId(savedTodo.id);
+      setEditValue('');
+      lastEmptyIdRef.current = savedTodo.id;
+      
+      console.log('Successfully created new todo with ID:', savedTodo.id);
+      
+    } catch (error) {
+      console.error('Error adding new todo:', error);
+      alert('Failed to create new todo. Please try again.');
     }
   }
 
-  const handleEditTodo = (e, id) => {
+  const handleEditTodo = async (e, id) => {
     if (e.key === 'Enter' || e.type === 'blur') {
-      // Always update the text, even if it's empty
-      setTodos(todos.map(todo => 
-        todo.id === id ? { 
-          ...todo, 
-          text: editValue.trim(),
-          // Mark as empty if the text is empty 
-          isEmpty: editValue.trim() === '' 
-        } : todo
-      ))
+      // Get current todo
+      const currentTodo = todos.find(todo => todo.id === id);
+      if (!currentTodo) return;
       
-      // Clear the lastEmptyIdRef if we're editing that item
-      if (id === lastEmptyIdRef.current) {
-        lastEmptyIdRef.current = null
+      const trimmedText = editValue.trim();
+      
+      // Create updated todo
+      const updatedTodo = { 
+        ...currentTodo,
+        text: trimmedText,
+        isEmpty: trimmedText === '',
+        // Explicitly preserve indentation status and parent relationship
+        isIndented: !!currentTodo.isIndented,
+        parentId: currentTodo.parentId
+      };
+      
+      try {
+        console.log('Saving todo with text:', trimmedText);
+        
+        // Update in database
+        await db.updateTodo(updatedTodo);
+        
+        // Update state
+        setTodos(todos.map(todo => 
+          todo.id === id ? updatedTodo : todo
+        ));
+        
+        // Clear the lastEmptyIdRef if we're editing that item
+        if (id === lastEmptyIdRef.current) {
+          lastEmptyIdRef.current = null;
+        }
+        
+        // Exit editing mode
+        setEditingId(null);
+        
+        console.log('Todo saved successfully');
+        
+      } catch (error) {
+        console.error('Error updating todo:', error);
+        alert('Failed to save todo. Please try again.');
+      }
+    }
+  }
+
+  const toggleTodo = async (id) => {
+    try {
+      // Get current todo
+      const currentTodo = todos.find(todo => todo.id === id);
+      if (!currentTodo) {
+        console.error(`Cannot toggle todo with ID ${id} - not found`);
+        return;
       }
       
-      // Exit editing mode
-      setEditingId(null)
+      // Create updated todo with toggled completion status
+      const updatedTodo = { 
+        ...currentTodo,
+        completed: !currentTodo.completed,
+        // Explicitly preserve indentation status and parent relationship
+        isIndented: !!currentTodo.isIndented,
+        parentId: currentTodo.parentId
+      };
+      
+      console.log(`Toggling completion for todo ${id} from ${currentTodo.completed} to ${updatedTodo.completed}`);
+      
+      // Update UI state immediately for responsiveness
+      setTodos(todos.map(todo => 
+        todo.id === id ? updatedTodo : todo
+      ));
+      
+      // Update in database - ensure ID is a number and completed is a boolean
+      await db.updateTodo({
+        ...updatedTodo,
+        id: Number(id),
+        completed: !!updatedTodo.completed // Ensure it's a boolean
+      });
+      
+      console.log('Todo toggle saved successfully');
+      
+    } catch (error) {
+      console.error('Error updating todo completion status:', error);
+      
+      // On error, revert the UI change
+      setTodos(todos.map(todo => 
+        todo.id === id ? currentTodo : todo
+      ));
     }
-  }
+  };
 
-  const toggleTodo = (id) => {
-    setTodos(todos.map(todo => 
-      todo.id === id ? { ...todo, completed: !todo.completed } : todo
-    ))
-  }
-
-  const deleteTodo = (id) => {
-    setTodos(todos.filter(todo => todo.id !== id))
-    
-    // If we're deleting the item we're editing, stop editing
-    if (id === editingId) {
-      setEditingId(null)
+  const deleteTodo = async (id) => {
+    try {
+      console.log(`🗑️ DELETE BUTTON CLICKED - Deleting todo with ID: ${id}`);
+      console.log('Current todos before delete:', todos);
+      
+      // If we're deleting the item we're editing, stop editing
+      if (Number(id) === editingId) {
+        setEditingId(null);
+      }
+      
+      // Delete from database - ensure ID is a number
+      console.log('🔄 Calling db.deleteTodo...');
+      const result = await db.deleteTodo(Number(id));
+      console.log('✅ Delete result:', result);
+      
+      if (result && result.deletedIds && Array.isArray(result.deletedIds)) {
+        // Convert all IDs to numbers to ensure consistent comparison
+        const deletedIdSet = new Set(result.deletedIds.map(Number));
+        console.log('Filtering out todos with IDs:', [...deletedIdSet]);
+        
+        const updatedTodos = todos.filter(todo => !deletedIdSet.has(Number(todo.id)));
+        console.log('Todos after deletion:', updatedTodos);
+        
+        // Update state
+        setTodos(updatedTodos);
+      } else {
+        // Fallback: remove the todo and any children
+        console.warn('Delete response did not contain deletedIds, falling back to simple filter');
+        const updatedTodos = todos.filter(todo => {
+          const todoId = Number(todo.id);
+          const targetId = Number(id);
+          const parentId = todo.parentId ? Number(todo.parentId) : null;
+          
+          // Remove the target todo and any todos that have it as a parent
+          return todoId !== targetId && parentId !== targetId;
+        });
+        setTodos(updatedTodos);
+      }
+      
+      console.log('Todo deleted successfully');
+      
+    } catch (error) {
+      console.error('Error deleting todo:', error);
+      // Show user-friendly error message but don't refresh automatically
+      alert('Failed to delete todo. Please try again.');
     }
-  }
+  };
 
   const toggleDarkMode = () => {
-    setDarkMode(!darkMode)
+    setDarkMode(!darkMode);
   }
 
-  const handleTitleEdit = (e) => {
+  const handleTitleEdit = async (e) => {
     if (e.key === 'Enter' || e.type === 'blur') {
       // Only save non-empty titles
       if (e.target.value.trim()) {
-        setTitle(e.target.value.trim())
+        const newTitle = e.target.value.trim();
+        
+        try {
+          console.log('Saving new title:', newTitle);
+          // Update in database
+          const result = await db.updateTitle(newTitle);
+          console.log('Title update result:', result);
+          
+          // Update state
+          setTitle(newTitle);
+        } catch (error) {
+          console.error('Error updating title:', error);
+          // If there was an error, refresh from server to ensure consistency
+          try {
+            const settings = await db.getSettings();
+            setTitle(settings.title);
+          } catch (refreshError) {
+            console.error('Failed to refresh title after update error:', refreshError);
+          }
+        }
       }
-      setEditingTitle(false)
+      setEditingTitle(false);
     }
   }
 
@@ -209,20 +403,29 @@ function App() {
     setEditingId(todo.id);
   }
 
-  // New manual drag and drop implementation
+  // New manual drag and drop implementation with horizontal indentation support
   const handleDragStart = (e, todo, index) => {
     // Instead of preventing dragging when editing, just stop editing
     if (editingId !== null) {
       // If we're editing the current item being dragged, apply the edit first
       if (editingId === todo.id) {
         // Update the todo with current edit value
-        setTodos(todos.map(t => 
-          t.id === editingId ? { 
-            ...t, 
-            text: editValue.trim(),
-            isEmpty: editValue.trim() === '' 
-          } : t
-        ));
+        const updatedTodo = {
+          ...todo,
+          text: editValue.trim(),
+          isEmpty: editValue.trim() === ''
+        };
+        
+        // Update in database and state
+        db.updateTodo(updatedTodo)
+          .then(() => {
+            setTodos(todos.map(t => 
+              t.id === editingId ? updatedTodo : t
+            ));
+          })
+          .catch(error => {
+            console.error('Error updating todo:', error);
+          });
       }
       
       // Exit edit mode
@@ -231,12 +434,22 @@ function App() {
     
     e.preventDefault(); // Prevent default drag behavior
     
+    // Store the initial indentation state
+    const initialIndentationState = {
+      isIndented: !!todo.isIndented,
+      parentId: todo.parentId
+    };
+    
     // Mark as dragging
     isDraggingRef.current = true;
     dragStartYRef.current = e.clientY;
+    dragStartXRef.current = e.clientX;
     draggedIndexRef.current = index;
     draggedElementRef.current = todoRefs.current[todo.id];
-    setDraggedItem(todo);
+    setDraggedItem({...todo, initialIndentationState});
+    dragDirectionRef.current = null; // Reset direction at start
+    dragThresholdPassed.current = false;
+    dragOffsetXRef.current = 0; // Reset horizontal offset
     
     // Add dragging class to body
     document.body.classList.add('is-dragging');
@@ -249,6 +462,7 @@ function App() {
       const rect = draggedElementRef.current.getBoundingClientRect();
       draggedElementRef.current.style.position = 'fixed';
       draggedElementRef.current.style.top = `${rect.top}px`;
+      draggedElementRef.current.style.left = `${rect.left}px`;
       draggedElementRef.current.style.width = `${rect.width}px`;
       draggedElementRef.current.style.zIndex = '1000';
       
@@ -271,15 +485,72 @@ function App() {
     if (!isDraggingRef.current || draggedIndexRef.current === null) return;
     
     const currentY = e.clientY;
+    const currentX = e.clientX;
     
-    // Move the dragged element with the cursor
-    if (draggedElementRef.current) {
-      const moveY = currentY - dragStartYRef.current;
-      const rect = draggedElementRef.current.getBoundingClientRect();
-      draggedElementRef.current.style.top = `${rect.top + moveY}px`;
-      dragStartYRef.current = currentY;
+    // Calculate the distance moved to determine drag direction
+    const deltaY = Math.abs(currentY - dragStartYRef.current);
+    const deltaX = Math.abs(currentX - dragStartXRef.current);
+    
+    // Determine drag direction if not already set and past threshold
+    if (!dragDirectionRef.current && !dragThresholdPassed.current) {
+      // Only set direction after a minimum threshold
+      if (deltaY > 10 || deltaX > 10) {
+        dragThresholdPassed.current = true;
+        // Set direction based on which axis has more movement
+        dragDirectionRef.current = deltaX > deltaY ? 'horizontal' : 'vertical';
+        
+        // Add appropriate class to dragged element
+        if (draggedElementRef.current) {
+          draggedElementRef.current.classList.add(`dragging-${dragDirectionRef.current}`);
+        }
+      }
     }
     
+    // Move the dragged element with the cursor based on direction
+    if (draggedElementRef.current) {
+      if (dragDirectionRef.current === 'vertical') {
+        // Vertical movement only
+        const moveY = currentY - dragStartYRef.current;
+        const rect = draggedElementRef.current.getBoundingClientRect();
+        draggedElementRef.current.style.top = `${rect.top + moveY}px`;
+        dragStartYRef.current = currentY;
+      } else if (dragDirectionRef.current === 'horizontal') {
+        // Horizontal movement - controlled, smooth movement
+        const dragEl = draggedElementRef.current;
+        const initialRect = dragEl.getBoundingClientRect();
+        
+        // Define the indentation limits
+        const startX = 0; // Starting position (no indent)
+        const maxIndentX = 40; // Maximum indent position
+        
+        // Calculate movement relative to drag start position
+        const totalMoveX = currentX - dragStartXRef.current;
+        
+        // Store the current drag position
+        dragOffsetXRef.current = Math.max(0, Math.min(maxIndentX, totalMoveX));
+        
+        // Apply a smooth transform instead of changing left position
+        // This keeps the element in the flow and prevents it from flying off
+        const translateX = Math.max(0, Math.min(maxIndentX, totalMoveX));
+        dragEl.style.transform = `translateX(${translateX}px)`;
+        
+        // Provide visual feedback about indentation threshold without updating the database
+        if (translateX > 20) {
+          dragEl.classList.add('indent-preview');
+        } else {
+          dragEl.classList.remove('indent-preview');
+        }
+        
+        return; // Skip vertical positioning logic when in horizontal mode
+      }
+    }
+    
+    // Skip vertical repositioning logic if we're in horizontal dragging mode
+    if (dragDirectionRef.current === 'horizontal') {
+      return;
+    }
+    
+    // Handle vertical dragging (reordering)
     // Find the element the cursor is currently over
     const todoElements = Array.from(document.querySelectorAll('.todo-item:not(.dragging)'));
     const placeholder = document.querySelector('.drag-placeholder');
@@ -381,30 +652,58 @@ function App() {
       placeholder.remove();
     }
     
-    // Reorder the todos if the position changed
-    if (draggedIndexRef.current !== null && targetIndexRef.current !== null && 
+    // Get dragged item's data
+    const draggedItem = todos[draggedIndexRef.current];
+    let updatedTodos = [...todos];
+    let positionsChanged = false;
+    let indentationChanged = false;
+    
+    // Handle indentation changes
+    if (dragDirectionRef.current === 'horizontal') {
+      // Determine final indentation based on horizontal movement
+      const isIndented = dragOffsetXRef.current > 20; // If moved more than 20px, indent
+      
+      // Compare with initial state to see if it changed
+      const initialState = draggedItem.initialIndentationState || {
+        isIndented: !!draggedItem.isIndented,
+        parentId: draggedItem.parentId
+      };
+      
+      // Only update if indentation state changed
+      if (isIndented !== initialState.isIndented) {
+        if (isIndented && draggedIndexRef.current > 0) {
+          // Find the previous item (potential parent)
+          const parentIndex = draggedIndexRef.current - 1;
+          const parentId = Number(todos[parentIndex].id);
+          
+          // Update todos with new indentation
+          updatedTodos = updatedTodos.map(todo => 
+            Number(todo.id) === Number(draggedItem.id) 
+              ? { ...todo, isIndented, parentId } 
+              : todo
+          );
+          
+          indentationChanged = true;
+        } else if (!isIndented && draggedItem.isIndented) {
+          // Remove indentation
+          updatedTodos = updatedTodos.map(todo => 
+            Number(todo.id) === Number(draggedItem.id) 
+              ? { ...todo, isIndented: false, parentId: null } 
+              : todo
+          );
+          
+          indentationChanged = true;
+        }
+      }
+    }
+    
+    // Handle vertical reordering
+    if (dragDirectionRef.current === 'vertical' && 
+        draggedIndexRef.current !== null && 
+        targetIndexRef.current !== null && 
         draggedIndexRef.current !== targetIndexRef.current) {
       
-      // Apply final animation
-      const todoElements = document.querySelectorAll('.todo-item:not(.dragging)');
-      todoElements.forEach(el => {
-        // Wait for any ongoing animations to complete
-        const handleTransitionEnd = () => {
-          el.removeEventListener('transitionend', handleTransitionEnd);
-          el.style.transition = '';
-          el.style.transform = '';
-        };
-        
-        el.addEventListener('transitionend', handleTransitionEnd);
-        
-        // If no transition in progress, clean up anyway
-        if (!el.style.transform || el.style.transform === 'none' || el.style.transform === 'translateY(0px)') {
-          el.style.transition = '';
-          el.style.transform = '';
-        }
-      });
-      
-      const updatedTodos = [...todos];
+      // Remove item from current position
       const [movedItem] = updatedTodos.splice(draggedIndexRef.current, 1);
       
       // Calculate the correct insert position
@@ -414,22 +713,70 @@ function App() {
       }
       insertAt = Math.max(0, Math.min(insertAt, updatedTodos.length));
       
+      // Check for possible parent-child relationship
+      const previousItem = insertAt > 0 ? updatedTodos[insertAt - 1] : null;
+      
+      // Keep existing parent-child relationships unless we move to the top
+      if (insertAt === 0) {
+        // If moved to the top, remove indentation
+        movedItem.isIndented = false;
+        movedItem.parentId = null;
+      }
+      
+      // Insert the moved item at the new position
       updatedTodos.splice(insertAt, 0, movedItem);
-      setTodos(updatedTodos);
+      positionsChanged = true;
+    }
+    
+    // Update the database if anything changed
+    if (positionsChanged || indentationChanged) {
+      // Ensure all todos have proper position values
+      const todosWithUpdatedPositions = updatedTodos.map((todo, index) => ({
+        ...todo,
+        position: index + 1 // 1-based position
+      }));
+      
+      // Update UI state immediately
+      setTodos(todosWithUpdatedPositions);
+      
+      // Update positions in database - this includes parent-child relationships
+      db.updateTodoPositions(todosWithUpdatedPositions)
+        .then(serverTodos => {
+          if (serverTodos && Array.isArray(serverTodos)) {
+            console.log('Server confirmed position update');
+            // We don't need to update the UI here since we've already updated it
+          }
+        })
+        .catch(error => {
+          console.error('Error updating todo positions:', error);
+          // If there was an error, refresh from server to ensure consistency
+          db.getAllTodos().then(serverTodos => {
+            setTodos(serverTodos);
+          });
+        });
+    } else {
+      console.log('Drag operation did not result in any changes');
     }
     
     // Reset dragged element style
     if (draggedElementRef.current) {
       draggedElementRef.current.style.position = '';
       draggedElementRef.current.style.top = '';
+      draggedElementRef.current.style.left = '';
       draggedElementRef.current.style.width = '';
       draggedElementRef.current.style.zIndex = '';
+      draggedElementRef.current.style.transform = '';
+      draggedElementRef.current.classList.remove('indent-preview');
     }
     
     // Clear styles and clean up
     const todoElements = document.querySelectorAll('.todo-item');
     todoElements.forEach(el => {
       el.classList.remove('dragging');
+      el.classList.remove('dragging-vertical');
+      el.classList.remove('dragging-horizontal');
+      el.classList.remove('indent-preview');
+      el.style.transform = '';
     });
     
     // Reset drag state
@@ -437,6 +784,9 @@ function App() {
     draggedIndexRef.current = null;
     targetIndexRef.current = null;
     draggedElementRef.current = null;
+    dragDirectionRef.current = null;
+    dragOffsetXRef.current = 0;
+    dragThresholdPassed.current = false;
     setDraggedItem(null);
     
     // Remove dragging class from body
@@ -446,6 +796,10 @@ function App() {
     document.removeEventListener('mousemove', handleMouseMove);
     document.removeEventListener('mouseup', handleMouseUp);
   };
+
+  if (isLoading) {
+    return <div className="loading">Loading...</div>;
+  }
 
   return (
     <div className={`todo-app ${darkMode ? 'dark-mode' : ''}`}>
@@ -461,7 +815,15 @@ function App() {
                 className="menu-icon"
               />
             </button>
-            <button className="add-btn" onClick={addEmptyTodo}>
+            <button 
+              className="add-btn" 
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                addEmptyTodo();
+              }}
+              title="Add new todo item"
+            >
               <img 
                 src="/images/additem.svg" 
                 alt="Add new task" 
@@ -499,7 +861,8 @@ function App() {
             <input
               type="text"
               className="title-edit-input"
-              defaultValue={title}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
               onKeyDown={(e) => {
                 e.stopPropagation();
                 if (e.key === 'Enter') handleTitleEdit(e);
@@ -521,13 +884,13 @@ function App() {
             {todos.map((todo, index) => (
               <li 
                 key={todo.id} 
-                className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''}`}
+                className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''} ${todo.isIndented ? 'indented' : ''}`}
                 ref={(element) => setTodoItemRef(element, todo.id)}
               >
                 <div 
                   className="drag-handle" 
                   onMouseDown={(e) => handleDragStart(e, todo, index)}
-                  title="Drag to reorder"
+                  title="Drag to reorder or indent"
                 >
                   <img 
                     src="/images/drag_grip.svg" 
@@ -539,12 +902,16 @@ function App() {
                 </div>
                 
                 <div className="todo-checkbox-container" onClick={(e) => e.stopPropagation()}>
-                  <label className="custom-checkbox">
+                  <label className="custom-checkbox" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       className="hidden-checkbox"
                       checked={todo.completed}
-                      onChange={() => toggleTodo(todo.id)}
+                      onChange={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        toggleTodo(todo.id);
+                      }}
                     />
                     <img 
                       src={todo.completed ? "/images/checkboxfull.svg" : "/images/checkboxempty.svg"} 
@@ -552,6 +919,11 @@ function App() {
                       className="checkbox-image" 
                       width="20" 
                       height="20"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        toggleTodo(todo.id);
+                      }}
                     />
                   </label>
                 </div>
@@ -581,10 +953,14 @@ function App() {
                   </span>
                 )}
                 
-                <button className="delete-btn" onClick={(e) => {
-                  e.stopPropagation();
-                  deleteTodo(todo.id);
-                }}>
+                <button 
+                  className="delete-btn" 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteTodo(todo.id);
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()} // Prevent drag start
+                >
                   <img 
                     src="/images/deleteitem.svg" 
                     alt="Delete task" 
@@ -592,7 +968,7 @@ function App() {
                     height="18"
                     className="delete-icon"
                   />
-                </button>
+        </button>
               </li>
             ))}
           </ul>
@@ -602,7 +978,7 @@ function App() {
           {/* Empty menu screen */}
         </div>
       )}
-    </div>
+      </div>
   )
 }
 
