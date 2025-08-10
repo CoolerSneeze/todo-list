@@ -81,8 +81,8 @@ const db = {
     return Promise.resolve(updatedTodos);
   },
   
-  deleteTodo: async (id) => {
-    console.log('🔥 IN-MEMORY DELETE CALLED with ID:', id);
+  deleteTodo: async (id, options = { cascade: true }) => {
+    console.log('🔥 IN-MEMORY DELETE CALLED with ID:', id, 'options:', options);
     console.log('📋 Current todos in memory:', todos);
     
     const todoIndex = todos.findIndex(t => t.id === id);
@@ -91,20 +91,52 @@ const db = {
       throw new Error(`Todo with ID ${id} not found`);
     }
     
-    console.log('✅ Found todo at index:', todoIndex);
+    // Helper: recursively collect descendant IDs (children, grandchildren, ...)
+    const collectDescendants = (parentIds) => {
+      const result = [];
+      const queue = [...parentIds];
+      while (queue.length) {
+        const pid = queue.shift();
+        const children = todos.filter(t => t.parentId === pid).map(t => t.id);
+        for (const cid of children) {
+          if (!result.includes(cid)) {
+            result.push(cid);
+            queue.push(cid);
+          }
+        }
+      }
+      return result;
+    };
     
-    // Find all child todos (todos that have this todo as parent)
-    const childTodos = todos.filter(t => t.parentId === id);
-    const deletedIds = [id, ...childTodos.map(t => t.id)];
+    const descendantIds = collectDescendants([id]);
+    const hasDescendants = descendantIds.length > 0;
+    console.log('🧬 Descendant IDs for delete:', descendantIds);
     
-    console.log('🧹 Will delete IDs:', deletedIds);
-    
-    // Remove the todo and all its children
-    todos = todos.filter(t => !deletedIds.includes(t.id));
-    
-    console.log('✅ Deleted todo and children from memory:', deletedIds);
-    console.log('📋 Remaining todos in memory:', todos);
-    return Promise.resolve({ success: true, deletedIds });
+    if (options.cascade) {
+      const deletedIds = [id, ...descendantIds];
+      console.log('🧹 Will delete IDs (cascade):', deletedIds);
+      todos = todos.filter(t => !deletedIds.includes(t.id));
+      // Recompute positions compactly
+      todos = todos.map((t, idx) => ({ ...t, position: idx + 1 }));
+      console.log('✅ Deleted todo and descendants from memory:', deletedIds);
+      console.log('📋 Remaining todos in memory:', todos);
+      return Promise.resolve({ success: true, deletedIds, cascaded: true });
+    } else {
+      // Lift all descendants to top-level (no parent, not indented), and delete only the target
+      console.log('🔼 Lifting descendants and deleting only parent');
+      todos = todos.filter(t => t.id !== id);
+      if (hasDescendants) {
+        todos = todos.map(t => (
+          descendantIds.includes(t.id)
+            ? { ...t, parentId: null, isIndented: false }
+            : t
+        ));
+      }
+      // Recompute positions compactly
+      todos = todos.map((t, idx) => ({ ...t, position: idx + 1 }));
+      console.log('✅ Deleted parent. Lifted descendants (if any). Remaining todos:', todos);
+      return Promise.resolve({ success: true, deletedIds: [id], cascaded: false, liftedIds: descendantIds });
+    }
   }
 };
 

@@ -179,7 +179,7 @@ body.is-dragging .todo-list {
   padding: 10px 0;
   width: 100%;
   margin-bottom: 5px;
-  transition: background-color 0.2s ease, padding-left 0.3s ease;
+  transition: background-color 0.2s ease, padding-left 0.3s ease, transform 0.1s ease-out;
   height: 40px; /* Increased height for better vertical centering */
   cursor: default;
   position: relative;
@@ -272,6 +272,28 @@ body.dark-mode .todo-item.dragging {
   background-color: rgba(40, 40, 40, 0.95);
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3), 0 6px 6px rgba(0, 0, 0, 0.33);
 }
+
+body.dark-mode .drop-ghost {
+  background-color: rgba(40, 40, 40, 0.95);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3), 0 6px 6px rgba(0, 0, 0, 0.33);
+}
+
+/* Prevent accidental text selection while allowing editing in inputs */
+html, body, .todo-app, .todo-list, .todo-item, .drag-handle, .custom-checkbox, .checkbox-image, .delete-btn, .top-buttons, h1, .todo-text, .empty-list, .menu-screen {
+  -webkit-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+/* Re-enable selection for editable fields */
+input, textarea, .title-edit-input, .edit-input {
+  -webkit-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+/* Remove tap highlight on mobile */
+* { -webkit-tap-highlight-color: transparent; }
 
 .todo-item.completed span.todo-text {
   color: inherit;
@@ -553,4 +575,18 @@ body.dark-mode .loading {
   0% { opacity: 0.3; }
   50% { opacity: 1; }
   100% { opacity: 0.3; }
+}
+
+/* Temporary ghost used during drop easing */
+.drop-ghost {
+  pointer-events: none !important;
+  border-radius: 6px;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.19), 0 6px 6px rgba(0, 0, 0, 0.23);
+  background-color: rgba(255, 255, 255, 0.95);
+  will-change: transform;
+}
+
+body.dark-mode .drop-ghost {
+  background-color: rgba(40, 40, 40, 0.95);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3), 0 6px 6px rgba(0, 0, 0, 0.33);
 }

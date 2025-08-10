@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import './App.css'
 import db from './db.js'
+// Shared animation settings for smooth, bouncy drop easing
+const DROP_DURATION_MS = 400;
+const DROP_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)';
 
 function App() {
   const [todos, setTodos] = useState([])
@@ -29,6 +32,12 @@ function App() {
   const dragDirectionRef = useRef(null) // 'vertical' or 'horizontal'
   const dragOffsetXRef = useRef(0) // Track horizontal offset
   const dragThresholdPassed = useRef(false) // Threshold for determining drag direction
+  const isDropAnimatingRef = useRef(false) // Guard to avoid conflicting animations during drop
+  const dragSessionIdRef = useRef(0) // Increments each drag start; used to ignore stale finalize callbacks
+  // Stable vertical dragging baseline
+  const verticalStartMouseYRef = useRef(0)
+  const verticalStartTopRef = useRef(0)
+  const verticalFixedLeftRef = useRef(0)
 
   // Load data from database on first render
   useEffect(() => {
@@ -253,32 +262,61 @@ function App() {
         setEditingId(null);
       }
       
-      // Delete from database - ensure ID is a number
-      console.log('🔄 Calling db.deleteTodo...');
-      const result = await db.deleteTodo(Number(id));
+      // Determine if the todo has any descendants in current state
+      const allById = new Map(todos.map(t => [Number(t.id), t]));
+      const collectDescendants = (rootId) => {
+        const result = new Set();
+        const queue = [Number(rootId)];
+        while (queue.length) {
+          const pid = queue.shift();
+          for (const t of todos) {
+            if (Number(t.parentId) === pid) {
+              const cid = Number(t.id);
+              if (!result.has(cid)) {
+                result.add(cid);
+                queue.push(cid);
+              }
+            }
+          }
+        }
+        return Array.from(result);
+      };
+      const descendantIds = collectDescendants(Number(id));
+      const hasDescendants = descendantIds.length > 0;
+      
+      // Ask confirmation only if there are descendants
+      let cascade = true;
+      if (hasDescendants) {
+        cascade = window.confirm('This item has child tasks.\n\nOK: delete this item AND all its children.\nCancel: delete only this item and keep children (they will move to top level).');
+      }
+      
+      console.log('🔄 Calling db.deleteTodo...', { cascade });
+      const result = await db.deleteTodo(Number(id), { cascade });
       console.log('✅ Delete result:', result);
       
       if (result && result.deletedIds && Array.isArray(result.deletedIds)) {
-        // Convert all IDs to numbers to ensure consistent comparison
+        // Filter out deleted
         const deletedIdSet = new Set(result.deletedIds.map(Number));
-        console.log('Filtering out todos with IDs:', [...deletedIdSet]);
+        let updatedTodos = todos.filter(todo => !deletedIdSet.has(Number(todo.id)));
         
-        const updatedTodos = todos.filter(todo => !deletedIdSet.has(Number(todo.id)));
-        console.log('Todos after deletion:', updatedTodos);
-        
-        // Update state
+        // If not cascaded and there are lifted descendants, unindent them
+        if (result.cascaded === false && Array.isArray(result.liftedIds) && result.liftedIds.length) {
+          const lifted = new Set(result.liftedIds.map(Number));
+          updatedTodos = updatedTodos.map(t => lifted.has(Number(t.id))
+            ? { ...t, parentId: null, isIndented: false }
+            : t
+          );
+        }
+        // Re-number positions compactly
+        updatedTodos = updatedTodos.map((t, idx) => ({ ...t, position: idx + 1 }));
         setTodos(updatedTodos);
       } else {
-        // Fallback: remove the todo and any children
-        console.warn('Delete response did not contain deletedIds, falling back to simple filter');
-        const updatedTodos = todos.filter(todo => {
-          const todoId = Number(todo.id);
-          const targetId = Number(id);
-          const parentId = todo.parentId ? Number(todo.parentId) : null;
-          
-          // Remove the target todo and any todos that have it as a parent
-          return todoId !== targetId && parentId !== targetId;
-        });
+        // Fallback path: delete only target; lift direct children
+        console.warn('Delete response did not contain deletedIds, applying fallback');
+        const targetId = Number(id);
+        let updatedTodos = todos.filter(t => Number(t.id) !== targetId);
+        updatedTodos = updatedTodos.map(t => Number(t.parentId) === targetId ? { ...t, parentId: null, isIndented: false } : t);
+        updatedTodos = updatedTodos.map((t, idx) => ({ ...t, position: idx + 1 }));
         setTodos(updatedTodos);
       }
       
@@ -286,7 +324,6 @@ function App() {
       
     } catch (error) {
       console.error('Error deleting todo:', error);
-      // Show user-friendly error message but don't refresh automatically
       alert('Failed to delete todo. Please try again.');
     }
   };
@@ -433,6 +470,8 @@ function App() {
     }
     
     e.preventDefault(); // Prevent default drag behavior
+    // New drag session token (used to ignore stale finalize callbacks)
+    dragSessionIdRef.current += 1;
     
     // Store the initial indentation state
     const initialIndentationState = {
@@ -451,13 +490,25 @@ function App() {
     dragThresholdPassed.current = false;
     dragOffsetXRef.current = 0; // Reset horizontal offset
     
+    // Ensure no stale placeholder remains from a prior aborted drag
+    const existingPlaceholder = document.querySelector('.drag-placeholder');
+    if (existingPlaceholder) existingPlaceholder.remove();
+    
     // Add dragging class to body
     document.body.classList.add('is-dragging');
+    document.body.style.userSelect = 'none';
     
     // Add dragging class to the dragged element
     if (draggedElementRef.current) {
       draggedElementRef.current.classList.add('dragging');
       draggedElementRef.current.style.zIndex = '1000';
+      // Stabilize any in-flight transitions on the dragged element
+      const cs = window.getComputedStyle(draggedElementRef.current);
+      draggedElementRef.current.style.transition = 'none';
+      if (cs.transform && cs.transform !== 'none') {
+        draggedElementRef.current.style.transform = cs.transform;
+        void draggedElementRef.current.offsetHeight; // lock current transform
+      }
       
       // For vertical dragging, we need position: fixed and placeholder
       // For horizontal dragging, we'll handle positioning differently
@@ -495,15 +546,16 @@ function App() {
           if (dragDirectionRef.current === 'vertical') {
             // For vertical dragging, use position: fixed and create placeholder
             const rect = draggedElementRef.current.getBoundingClientRect();
-            
-            // Check if this is an indented item to avoid double-offset
-            const draggedItem = todos[draggedIndexRef.current];
-            const isIndented = !!draggedItem.isIndented;
-            const leftPosition = isIndented ? rect.left - 60 : rect.left; // Subtract CSS transform offset
-            
+            // Establish stable baselines to avoid cumulative drift
+            verticalStartMouseYRef.current = currentY;
+            verticalStartTopRef.current = rect.top;
+            const draggedItem0 = todos[draggedIndexRef.current];
+            const isIndented0 = !!draggedItem0.isIndented;
+            verticalFixedLeftRef.current = isIndented0 ? rect.left - 60 : rect.left;
+
             draggedElementRef.current.style.position = 'fixed';
-            draggedElementRef.current.style.top = `${rect.top}px`;
-            draggedElementRef.current.style.left = `${leftPosition}px`;
+            draggedElementRef.current.style.top = `${verticalStartTopRef.current}px`;
+            draggedElementRef.current.style.left = `${verticalFixedLeftRef.current}px`;
             draggedElementRef.current.style.width = `${rect.width}px`;
             
             // Create a placeholder to maintain spacing
@@ -526,11 +578,10 @@ function App() {
     // Move the dragged element with the cursor based on direction
     if (draggedElementRef.current) {
       if (dragDirectionRef.current === 'vertical') {
-        // Vertical movement only
-        const moveY = currentY - dragStartYRef.current;
-        const rect = draggedElementRef.current.getBoundingClientRect();
-        draggedElementRef.current.style.top = `${rect.top + moveY}px`;
-        dragStartYRef.current = currentY;
+        // Vertical movement based on fixed baselines (prevents drift)
+        const delta = currentY - verticalStartMouseYRef.current;
+        const newTop = verticalStartTopRef.current + delta;
+        draggedElementRef.current.style.top = `${newTop}px`;
       } else if (dragDirectionRef.current === 'horizontal') {
         // Horizontal movement - simple smooth sliding in normal flow
         const dragEl = draggedElementRef.current;
@@ -640,6 +691,12 @@ function App() {
       requestAnimationFrame(() => {
         todoElements.forEach(el => {
           if (!el.hasAttribute('data-placeholder') && initialPositions.has(el)) {
+            // Skip FLIP animation on the dragged element if it will have its own slide animation
+            const isDraggedElement = draggedElementRef.current && el === draggedElementRef.current;
+            if (isDraggedElement) {
+              return; // Let the slide animation handle the dragged element
+            }
+            
             const initialPos = initialPositions.get(el);
             const finalRect = el.getBoundingClientRect();
             
@@ -673,11 +730,8 @@ function App() {
   const handleMouseUp = () => {
     if (!isDraggingRef.current) return;
     
-    // Remove placeholder
+    // Keep placeholder in DOM until after any drop animation completes
     const placeholder = document.querySelector('.drag-placeholder');
-    if (placeholder) {
-      placeholder.remove();
-    }
     
     // Get dragged item's data
     const draggedItem = todos[draggedIndexRef.current];
@@ -733,6 +787,130 @@ function App() {
       }
     }
     
+    // If this was a horizontal drag, handle glide animation for indent/unindent and return early
+    if (dragDirectionRef.current === 'horizontal' && draggedElementRef.current) {
+      const el = draggedElementRef.current;
+      const initialState = draggedItem.initialIndentationState || {
+        isIndented: !!draggedItem.isIndented,
+        parentId: draggedItem.parentId
+      };
+
+      const baseBefore = initialState.isIndented ? 60 : 0;
+      const releaseOffset = baseBefore + (dragOffsetXRef.current || 0);
+
+      // Decide target indentation
+      const wasIndented = !!initialState.isIndented;
+      let willBeIndented;
+      if (wasIndented) {
+        // If item was indented, unindent if dragged left more than 30px
+        willBeIndented = (dragOffsetXRef.current || 0) > -30;
+      } else {
+        // If item was not indented, indent if dragged right more than 30px
+        willBeIndented = (dragOffsetXRef.current || 0) > 30;
+      }
+
+      // Do not allow indenting the first item (no parent available)
+      if (willBeIndented && draggedIndexRef.current === 0) {
+        willBeIndented = false;
+      }
+
+      // Prepare animation start state (from release position)
+      el.style.transition = 'none';
+      el.style.transform = `translateX(${releaseOffset}px)`;
+
+      // Stop tracking and clear listeners immediately
+      isDraggingRef.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.classList.remove('is-dragging');
+      el.classList.remove('dragging','dragging-horizontal','indent-preview');
+
+      if (willBeIndented !== wasIndented) {
+        // Commit indentation change to state, then glide to new base (0 or 60)
+        // Pick the nearest previous NON-indented item as parent. If none, disallow indent.
+        let targetParentId = null;
+        if (willBeIndented) {
+          const i = draggedIndexRef.current ?? -1;
+          for (let j = (i !== null ? i - 1 : -1); j >= 0; j--) {
+            const candidate = todos[j];
+            if (!candidate) continue;
+            if (!candidate.isIndented) {
+              targetParentId = Number(candidate.id);
+              break;
+            }
+          }
+          // If no valid parent found, cancel indent
+          if (targetParentId == null) {
+            willBeIndented = false;
+          }
+        }
+
+        const todosWithIndentChange = todos.map(t => 
+          Number(t.id) === Number(draggedItem.id)
+            ? { ...t, isIndented: willBeIndented, parentId: willBeIndented ? targetParentId : null }
+            : t
+        ).map((t, idx) => ({ ...t, position: idx + 1 }));
+
+        const baseAfter = willBeIndented ? 60 : 0;
+
+        // Trigger render; keep inline transform to hold visual position
+        setTodos(todosWithIndentChange);
+
+        const sessionAtStart = dragSessionIdRef.current;
+        requestAnimationFrame(() => {
+          void el.offsetHeight;
+          el.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
+          el.style.transform = `translateX(${baseAfter}px)`;
+
+          const finalize = () => {
+            // Ignore if a new drag session has started
+            if (sessionAtStart !== dragSessionIdRef.current) return;
+            el.removeEventListener('transitionend', finalize);
+            el.style.transition = '';
+            el.style.transform = '';
+            draggedIndexRef.current = null;
+            targetIndexRef.current = null;
+            draggedElementRef.current = null;
+            dragDirectionRef.current = null;
+            dragOffsetXRef.current = 0;
+            dragThresholdPassed.current = false;
+            setDraggedItem(null);
+            db.updateTodoPositions(todosWithIndentChange)
+              .catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
+          };
+          el.addEventListener('transitionend', finalize, { once: true });
+          setTimeout(finalize, DROP_DURATION_MS + 80);
+        });
+      } else {
+        // No indentation change; glide back to current base
+        const baseAfter = baseBefore;
+        const sessionAtStart = dragSessionIdRef.current;
+        requestAnimationFrame(() => {
+          void el.offsetHeight;
+          el.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
+          el.style.transform = `translateX(${baseAfter}px)`;
+
+          const finalize = () => {
+            if (sessionAtStart !== dragSessionIdRef.current) return;
+            el.removeEventListener('transitionend', finalize);
+            el.style.transition = '';
+            el.style.transform = '';
+            draggedIndexRef.current = null;
+            targetIndexRef.current = null;
+            draggedElementRef.current = null;
+            dragDirectionRef.current = null;
+            dragOffsetXRef.current = 0;
+            dragThresholdPassed.current = false;
+            setDraggedItem(null);
+          };
+          el.addEventListener('transitionend', finalize, { once: true });
+          setTimeout(finalize, DROP_DURATION_MS + 60);
+        });
+      }
+
+      return; // Horizontal path handled fully
+    }
+
     // Handle vertical reordering
     if (dragDirectionRef.current === 'vertical' && 
         draggedIndexRef.current !== null && 
@@ -777,35 +955,35 @@ function App() {
     
     // Post-process: Fix any invalid parent-child relationships after reordering
     if (positionsChanged) {
+      // Keep children indented by reparenting to the nearest previous root item.
+      // Only unindent if there is NO non-indented item above.
       let relationshipsFixed = false;
       updatedTodos = updatedTodos.map((todo, index) => {
-        if (todo.isIndented) {
-          // Check if this indented item has a valid parent
-          if (index === 0) {
-            // First item can't be indented
-            relationshipsFixed = true;
-            return { ...todo, isIndented: false, parentId: null };
-          } else {
-            const previousItem = updatedTodos[index - 1];
-            if (previousItem.isIndented) {
-              // Previous item is also indented (child), so this can't be indented
-              relationshipsFixed = true;
-              return { ...todo, isIndented: false, parentId: null };
-            } else {
-              // Previous item is valid parent, update parentId if needed
-              if (todo.parentId !== Number(previousItem.id)) {
-                relationshipsFixed = true;
-                return { ...todo, parentId: Number(previousItem.id) };
-              }
-            }
-          }
+        if (!todo.isIndented) return todo;
+        if (index === 0) {
+          relationshipsFixed = true;
+          return { ...todo, isIndented: false, parentId: null };
+        }
+        // Find nearest previous non-indented item
+        let k = index - 1;
+        let parent = null;
+        while (k >= 0) {
+          const cand = updatedTodos[k];
+          if (!cand.isIndented) { parent = cand; break; }
+          k--;
+        }
+        if (!parent) {
+          relationshipsFixed = true;
+          return { ...todo, isIndented: false, parentId: null };
+        }
+        const newPid = Number(parent.id);
+        if (todo.parentId !== newPid) {
+          relationshipsFixed = true;
+          return { ...todo, parentId: newPid };
         }
         return todo;
       });
-      
-      if (relationshipsFixed) {
-        indentationChanged = true;
-      }
+      if (relationshipsFixed) indentationChanged = true;
     }
     
     // Update the database if anything changed
@@ -833,8 +1011,282 @@ function App() {
         position: index + 1 // 1-based position
       }));
       
-      // Update UI state immediately
+      // Detect children that auto-unindented on drop so we can animate them immediately
+      const prevIndentById = new Map(todos.map(t => [Number(t.id), !!t.isIndented]));
+      const unindentedIds = todosWithUpdatedPositions
+        .filter(t => prevIndentById.get(Number(t.id)) === true && !t.isIndented)
+        .map(t => Number(t.id));
+      // SIMPLE FLIP ANIMATION ON REAL ELEMENT (no ghost)
+      if (draggedElementRef.current) {
+        const droppedId = draggedItem.id;
+        const wasIndentedAtDrop = draggedElementRef.current.classList.contains('indented');
+        const fromRect = draggedElementRef.current.getBoundingClientRect();
+
+        // Stop tracking immediately and clear any cursor-based/pinning styles on the dragged element
+        isDraggingRef.current = false;
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+        setDraggedItem(null);
+        // Clear inline styles that could keep it visually where the mouse left it
+        draggedElementRef.current.style.transform = '';
+        draggedElementRef.current.style.position = '';
+        draggedElementRef.current.style.top = '';
+        draggedElementRef.current.style.left = '';
+        draggedElementRef.current.style.width = '';
+        draggedElementRef.current.style.height = '';
+        draggedElementRef.current.style.zIndex = '';
+        draggedElementRef.current.style.pointerEvents = '';
+        draggedElementRef.current.style.visibility = '';
+        // Also drop drag classes now so layout is governed by normal CSS
+        draggedElementRef.current.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
+
+        // Commit new order and remove placeholder so DOM settles
+        setTodos(todosWithUpdatedPositions);
+        if (placeholder) placeholder.remove();
+
+        // After render, measure target and FLIP
+        const sessionAtStart = dragSessionIdRef.current;
+        requestAnimationFrame(() => {
+          const newEl = document.querySelector(`[data-id="${droppedId}"]`);
+          // Kick off simultaneous horizontal unindent glides for affected children (excluding the dropped item)
+          unindentedIds
+            .filter(id => Number(id) !== Number(droppedId))
+            .forEach(id => {
+              const childEl = document.querySelector(`[data-id="${id}"]`);
+              if (!childEl) return;
+              // Start from visual indent (60px) and glide to base (0)
+              childEl.style.transition = 'none';
+              childEl.style.transform = 'translateX(60px)';
+              requestAnimationFrame(() => {
+                if (sessionAtStart !== dragSessionIdRef.current) return; // stale
+                void childEl.offsetHeight;
+                childEl.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
+                childEl.style.transform = '';
+              });
+              // Defensive cleanup in case transitionend is missed
+              const onChildEnd = () => {
+                childEl.removeEventListener('transitionend', onChildEnd);
+                childEl.style.transition = '';
+                childEl.style.transform = '';
+              };
+              childEl.addEventListener('transitionend', onChildEnd, { once: true });
+              setTimeout(onChildEnd, DROP_DURATION_MS + 120);
+            });
+          if (!newEl) {
+            // Fallback cleanup
+            const allEls = document.querySelectorAll('.todo-item');
+            allEls.forEach(el => {
+              el.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
+              el.style.transform = '';
+              el.style.visibility = '';
+            });
+            isDropAnimatingRef.current = false;
+            draggedIndexRef.current = null;
+            targetIndexRef.current = null;
+            draggedElementRef.current = null;
+            dragDirectionRef.current = null;
+            dragOffsetXRef.current = 0;
+            dragThresholdPassed.current = false;
+            document.body.classList.remove('is-dragging');
+            db.updateTodoPositions(todosWithUpdatedPositions).catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
+            return;
+          }
+
+          // Clear any drag-time pinning styles BEFORE measuring target so layout is correct
+          newEl.style.position = '';
+          newEl.style.top = '';
+          newEl.style.left = '';
+          newEl.style.width = '';
+          newEl.style.height = '';
+          newEl.style.zIndex = '';
+          newEl.style.pointerEvents = '';
+          newEl.style.visibility = '';
+
+          const toRect = newEl.getBoundingClientRect();
+          const dy = fromRect.top - toRect.top;
+          // Determine if the dropped item auto-unindented by DOM class comparison
+          const nowIndentedClass = newEl.classList.contains('indented');
+          const autoUnindentDropped = wasIndentedAtDrop && !nowIndentedClass;
+          const dxMeasured = fromRect.left - toRect.left;
+          const dx = Math.abs(dxMeasured) > 1 ? dxMeasured : (autoUnindentDropped ? 60 : 0);
+          // Compose with class-based indent so inline transform doesn't cancel it visually
+          const baseIndent = nowIndentedClass ? 60 : 0;
+
+          const needsAnim = Math.abs(dy) > 1 || Math.abs(dx) > 1;
+          if (needsAnim) {
+            isDropAnimatingRef.current = true;
+            const sessionAtStart = dragSessionIdRef.current;
+            newEl.style.willChange = 'transform';
+            newEl.style.transition = 'none';
+            // Start from current offset, including base indent
+            newEl.style.transform = `translate(${baseIndent + dx}px, ${dy}px)`;
+            requestAnimationFrame(() => {
+              void newEl.offsetHeight;
+              const duration = autoUnindentDropped ? (DROP_DURATION_MS + 120) : DROP_DURATION_MS;
+              if (autoUnindentDropped && typeof newEl.animate === 'function') {
+                // Use WAAPI to ensure bounce easing is honored for the horizontal glide-out
+                const start = `translate(${baseIndent + dx}px, ${dy}px)`;
+                const end = `translate(${baseIndent}px, 0px)`; // baseIndent is 0 when unindenting
+                const anim = newEl.animate(
+                  [
+                    { transform: start },
+                    { transform: end }
+                  ],
+                  { duration, easing: DROP_EASE, fill: 'forwards' }
+                );
+                const sessionAtStart2 = sessionAtStart;
+                anim.addEventListener('finish', () => {
+                  if (sessionAtStart2 !== dragSessionIdRef.current) return;
+                  finalize();
+                }, { once: true });
+                // Fallback finalize in case finish is missed
+                setTimeout(finalize, duration + 60);
+              } else {
+                newEl.style.transition = `transform ${duration}ms ${DROP_EASE}`;
+                // Animate to the base indent for this element's final state
+                newEl.style.transform = `translate(${baseIndent}px, 0px)`;
+              }
+            });
+
+            const finalize = () => {
+              if (sessionAtStart !== dragSessionIdRef.current) return;
+              newEl.removeEventListener('transitionend', finalize);
+              newEl.style.willChange = '';
+              newEl.style.transition = '';
+              // Clear inline so class-based indent owns the final state
+              newEl.style.transform = '';
+              const allEls = document.querySelectorAll('.todo-item');
+              allEls.forEach(el => {
+                el.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
+                el.style.transform = '';
+                el.style.visibility = '';
+              });
+              isDropAnimatingRef.current = false;
+              draggedIndexRef.current = null;
+              targetIndexRef.current = null;
+              draggedElementRef.current = null;
+              dragDirectionRef.current = null;
+              dragOffsetXRef.current = 0;
+              dragThresholdPassed.current = false;
+              document.body.classList.remove('is-dragging');
+              document.body.style.userSelect = '';
+              db.updateTodoPositions(todosWithUpdatedPositions)
+                .catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
+            };
+            newEl.addEventListener('transitionend', finalize, { once: true });
+            const duration = autoUnindentDropped ? (DROP_DURATION_MS + 120) : DROP_DURATION_MS;
+            setTimeout(finalize, duration + 80);
+          } else {
+            // No visible movement, just clean up
+            const allEls = document.querySelectorAll('.todo-item');
+            allEls.forEach(el => {
+              el.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
+              el.style.transform = '';
+              el.style.visibility = '';
+            });
+            isDropAnimatingRef.current = false;
+            draggedIndexRef.current = null;
+            targetIndexRef.current = null;
+            draggedElementRef.current = null;
+            dragDirectionRef.current = null;
+            dragOffsetXRef.current = 0;
+            dragThresholdPassed.current = false;
+            document.body.classList.remove('is-dragging');
+            document.body.style.userSelect = '';
+            db.updateTodoPositions(todosWithUpdatedPositions)
+              .catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
+          }
+        });
+        return; // Done handling drop via FLIP
+      }
+      
+      // APPROACH 1: Copy EXACT working structure from parent-child fix
+      // Vertical slide animation - EXACT same pattern as working compensatingTransform
+      if (!isDropAnimatingRef.current && dragDirectionRef.current === 'vertical' && positionsChanged && draggedElementRef.current) {
+        // Store position before setTodos
+        const beforeRect = draggedElementRef.current.getBoundingClientRect();
+        
+        // Wait one frame for setTodos to complete, then calculate and apply slide
+        requestAnimationFrame(() => {
+        if (draggedElementRef.current) {
+          const afterRect = draggedElementRef.current.getBoundingClientRect();
+          const slideDistance = beforeRect.top - afterRect.top;
+            
+            if (Math.abs(slideDistance) > 2) {
+              // EXACT same structure as working parent-child fix
+              draggedElementRef.current.style.transform = `translateY(${slideDistance}px)`;
+              
+              // Use shared DROP_DURATION_MS and DROP_EASE for drop-release animations
+              // EXACT same requestAnimationFrame pattern
+              requestAnimationFrame(() => {
+                if (draggedElementRef.current) {
+                  draggedElementRef.current.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
+                  draggedElementRef.current.style.transform = '';
+                }
+              });
+            }
+          }
+        });
+      }
+      
+      // Horizontal slide animation - EXACT same pattern as working compensatingTransform  
+      if (dragDirectionRef.current === 'horizontal' && draggedElementRef.current) {
+        const currentOffset = dragOffsetXRef.current;
+        let horizontalSlideDistance = 0;
+        
+        // Calculate if user needs to slide the rest of the way
+        if (indentationChanged) {
+          const wasIndented = !!draggedItem.isIndented;
+          if (!wasIndented && currentOffset < 60) {
+            // Indenting but didn't go all the way
+            horizontalSlideDistance = 60 - currentOffset;
+          } else if (wasIndented && currentOffset > -60) {
+            // Unindenting but didn't go all the way  
+            horizontalSlideDistance = -(60 + currentOffset);
+          }
+        }
+        
+        if (Math.abs(horizontalSlideDistance) > 2) {
+          // EXACT same structure as working parent-child fix
+          draggedElementRef.current.style.transform = `translateX(${horizontalSlideDistance}px)`;
+          
+          // EXACT same requestAnimationFrame pattern
+          requestAnimationFrame(() => {
+            if (draggedElementRef.current) {
+              draggedElementRef.current.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
+              draggedElementRef.current.style.transform = '';
+            }
+          });
+        }
+      }
+      
+      // Update UI state immediately (no overshoot animation needed)
       setTodos(todosWithUpdatedPositions);
+      
+      // APPROACH 2: Web Animations API as fallback (runs after setTodos)
+      if (!isDropAnimatingRef.current && dragDirectionRef.current === 'vertical' && positionsChanged) {
+        // Wait for React re-render, then find element and animate
+        requestAnimationFrame(() => {
+          const draggedItemId = draggedItem.id;
+          const newElement = document.querySelector(`[data-id="${draggedItemId}"]`);
+          
+          if (newElement) {
+            // Use Web Animations API for more reliable animation
+            const animation = newElement.animate([
+              { transform: 'translateY(20px)' }, // Start offset
+              { transform: 'translateY(0px)' }   // End at natural position
+            ], {
+              duration: DROP_DURATION_MS,
+              easing: DROP_EASE,
+              fill: 'forwards'
+            });
+            
+            animation.addEventListener('finish', () => {
+              newElement.style.transform = '';
+            });
+          }
+        });
+      }
       
       // Apply compensating transform to prevent visual jump
       if (compensatingTransform !== 0 && draggedElementRef.current) {
@@ -843,7 +1295,7 @@ function App() {
         // Remove the compensating transform after a brief moment to let it settle naturally
         requestAnimationFrame(() => {
           if (draggedElementRef.current) {
-            draggedElementRef.current.style.transition = 'transform 0.1s ease-out';
+            draggedElementRef.current.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
             draggedElementRef.current.style.transform = '';
           }
         });
@@ -866,6 +1318,8 @@ function App() {
     } else {
       console.log('Drag operation did not result in any changes');
     }
+    
+
     
     // Reset dragged element style
     if (draggedElementRef.current) {
@@ -906,6 +1360,7 @@ function App() {
     
     // Remove dragging class from body
     document.body.classList.remove('is-dragging');
+    document.body.style.userSelect = '';
     
     // Remove global event listeners
     document.removeEventListener('mousemove', handleMouseMove);
@@ -995,10 +1450,10 @@ function App() {
             {todos.length === 0 && (
               <li className="empty-list">No tasks yet. Add one to get started!</li>
             )}
-            
             {todos.map((todo, index) => (
               <li 
-                key={todo.id} 
+                key={todo.id}
+                data-id={todo.id}
                 className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''} ${todo.isIndented ? 'indented' : ''}`}
                 ref={(element) => setTodoItemRef(element, todo.id)}
               >
@@ -1015,7 +1470,7 @@ function App() {
                     className="drag-icon"
                   />
                 </div>
-                
+
                 <div className="todo-checkbox-container" onClick={(e) => e.stopPropagation()}>
                   <label className="custom-checkbox" onClick={(e) => e.stopPropagation()}>
                     <input
@@ -1042,7 +1497,7 @@ function App() {
                     />
                   </label>
                 </div>
-                
+
                 {editingId === todo.id ? (
                   <input
                     type="text"
@@ -1067,7 +1522,7 @@ function App() {
                     {todo.text || <span className="placeholder-text">Empty task</span>}
                   </span>
                 )}
-                
+
                 <button 
                   className="delete-btn" 
                   onClick={(e) => {
@@ -1083,7 +1538,7 @@ function App() {
                     height="18"
                     className="delete-icon"
                   />
-        </button>
+                </button>
               </li>
             ))}
           </ul>
