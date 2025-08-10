@@ -4,6 +4,11 @@ import db from './db.js'
 // Shared animation settings for smooth, bouncy drop easing
 const DROP_DURATION_MS = 400;
 const DROP_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)';
+// Accessibility: respect reduced motion
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function App() {
   const [todos, setTodos] = useState([])
@@ -815,7 +820,9 @@ function App() {
       }
 
       // Prepare animation start state (from release position)
+      // Safety: clear any stale inline transform from previous animations
       el.style.transition = 'none';
+      el.style.transform = '';
       el.style.transform = `translateX(${releaseOffset}px)`;
 
       // Stop tracking and clear listeners immediately
@@ -859,8 +866,14 @@ function App() {
         const sessionAtStart = dragSessionIdRef.current;
         requestAnimationFrame(() => {
           void el.offsetHeight;
-          el.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
-          el.style.transform = `translateX(${baseAfter}px)`;
+          const duration = prefersReducedMotion() ? 0 : DROP_DURATION_MS;
+          if (duration === 0) {
+            el.style.transition = 'none';
+            el.style.transform = `translateX(${baseAfter}px)`;
+          } else {
+            el.style.transition = `transform ${duration}ms ${DROP_EASE}`;
+            el.style.transform = `translateX(${baseAfter}px)`;
+          }
 
           const finalize = () => {
             // Ignore if a new drag session has started
@@ -868,6 +881,8 @@ function App() {
             el.removeEventListener('transitionend', finalize);
             el.style.transition = '';
             el.style.transform = '';
+            // Safety sweep: clear any lingering inline transforms across items
+            document.querySelectorAll('.todo-item').forEach(n => { n.style.transform = ''; });
             draggedIndexRef.current = null;
             targetIndexRef.current = null;
             draggedElementRef.current = null;
@@ -879,7 +894,7 @@ function App() {
               .catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
           };
           el.addEventListener('transitionend', finalize, { once: true });
-          setTimeout(finalize, DROP_DURATION_MS + 80);
+          setTimeout(finalize, (prefersReducedMotion() ? 0 : DROP_DURATION_MS) + 80);
         });
       } else {
         // No indentation change; glide back to current base
@@ -887,8 +902,14 @@ function App() {
         const sessionAtStart = dragSessionIdRef.current;
         requestAnimationFrame(() => {
           void el.offsetHeight;
-          el.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
-          el.style.transform = `translateX(${baseAfter}px)`;
+          const duration = prefersReducedMotion() ? 0 : DROP_DURATION_MS;
+          if (duration === 0) {
+            el.style.transition = 'none';
+            el.style.transform = `translateX(${baseAfter}px)`;
+          } else {
+            el.style.transition = `transform ${duration}ms ${DROP_EASE}`;
+            el.style.transform = `translateX(${baseAfter}px)`;
+          }
 
           const finalize = () => {
             if (sessionAtStart !== dragSessionIdRef.current) return;
@@ -904,7 +925,7 @@ function App() {
             setDraggedItem(null);
           };
           el.addEventListener('transitionend', finalize, { once: true });
-          setTimeout(finalize, DROP_DURATION_MS + 60);
+          setTimeout(finalize, (prefersReducedMotion() ? 0 : DROP_DURATION_MS) + 60);
         });
       }
 
@@ -1122,8 +1143,8 @@ function App() {
             newEl.style.transform = `translate(${baseIndent + dx}px, ${dy}px)`;
             requestAnimationFrame(() => {
               void newEl.offsetHeight;
-              const duration = autoUnindentDropped ? (DROP_DURATION_MS + 120) : DROP_DURATION_MS;
-              if (autoUnindentDropped && typeof newEl.animate === 'function') {
+              const duration = prefersReducedMotion() ? 0 : (autoUnindentDropped ? (DROP_DURATION_MS + 120) : DROP_DURATION_MS);
+              if (autoUnindentDropped && typeof newEl.animate === 'function' && duration > 0) {
                 // Use WAAPI to ensure bounce easing is honored for the horizontal glide-out
                 const start = `translate(${baseIndent + dx}px, ${dy}px)`;
                 const end = `translate(${baseIndent}px, 0px)`; // baseIndent is 0 when unindenting
@@ -1142,9 +1163,15 @@ function App() {
                 // Fallback finalize in case finish is missed
                 setTimeout(finalize, duration + 60);
               } else {
-                newEl.style.transition = `transform ${duration}ms ${DROP_EASE}`;
-                // Animate to the base indent for this element's final state
-                newEl.style.transform = `translate(${baseIndent}px, 0px)`;
+                if (duration === 0) {
+                  newEl.style.transition = 'none';
+                  newEl.style.transform = `translate(${baseIndent}px, 0px)`;
+                  // finalize will run via the outer timeout below
+                } else {
+                  newEl.style.transition = `transform ${duration}ms ${DROP_EASE}`;
+                  // Animate to the base indent for this element's final state
+                  newEl.style.transform = `translate(${baseIndent}px, 0px)`;
+                }
               }
             });
 
@@ -1174,7 +1201,7 @@ function App() {
                 .catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
             };
             newEl.addEventListener('transitionend', finalize, { once: true });
-            const duration = autoUnindentDropped ? (DROP_DURATION_MS + 120) : DROP_DURATION_MS;
+            const duration = prefersReducedMotion() ? 0 : (autoUnindentDropped ? (DROP_DURATION_MS + 120) : DROP_DURATION_MS);
             setTimeout(finalize, duration + 80);
           } else {
             // No visible movement, just clean up
