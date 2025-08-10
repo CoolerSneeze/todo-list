@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
+import ReactDOM from 'react-dom'
 import './App.css'
 import db from './db.js'
+// Feature flag for custom delete modal. Enabled.
+const USE_CUSTOM_DELETE_MODAL = true;
 // Shared animation settings for smooth, bouncy drop easing
 const DROP_DURATION_MS = 400;
 const DROP_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)';
@@ -20,6 +23,9 @@ function App() {
   const [draggedItem, setDraggedItem] = useState(null)
   const [showMenu, setShowMenu] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  // Delete confirmation modal state
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [deleteModalState, setDeleteModalState] = useState({ id: null, count: 0 })
   const editInputRef = useRef(null)
   const titleInputRef = useRef(null)
   const lastEmptyIdRef = useRef(null)
@@ -39,6 +45,9 @@ function App() {
   const dragThresholdPassed = useRef(false) // Threshold for determining drag direction
   const isDropAnimatingRef = useRef(false) // Guard to avoid conflicting animations during drop
   const dragSessionIdRef = useRef(0) // Increments each drag start; used to ignore stale finalize callbacks
+  const finalizeStartedRef = useRef(false) // Prevent duplicate finalize/updates
+  const dropSessionIdRef = useRef(0) // Increments per drop; used to spam-proof cleanup
+  const cleanupTimerRef = useRef(null) // Single active cleanup timer
   // Stable vertical dragging baseline
   const verticalStartMouseYRef = useRef(0)
   const verticalStartTopRef = useRef(0)
@@ -257,6 +266,56 @@ function App() {
     }
   };
 
+  // Modal handlers
+  const handleCancelDelete = () => {
+    setShowDeleteModal(false);
+    setDeleteModalState({ id: null, count: 0 });
+  };
+  const handleConfirmCascade = async () => {
+    const { id } = deleteModalState;
+    setShowDeleteModal(false);
+    await doDelete(id, true);
+    setDeleteModalState({ id: null, count: 0 });
+  };
+  const handleConfirmLift = async () => {
+    const { id } = deleteModalState;
+    setShowDeleteModal(false);
+    await doDelete(id, false);
+    setDeleteModalState({ id: null, count: 0 });
+  };
+
+  // Internal helper to apply deletion and update local UI state
+  const applyDeleteResult = (id, result) => {
+    if (result && result.deletedIds && Array.isArray(result.deletedIds)) {
+      const deletedIdSet = new Set(result.deletedIds.map(Number));
+      let updatedTodos = todos.filter(todo => !deletedIdSet.has(Number(todo.id)));
+      if (result.cascaded === false && Array.isArray(result.liftedIds) && result.liftedIds.length) {
+        const lifted = new Set(result.liftedIds.map(Number));
+        updatedTodos = updatedTodos.map(t => lifted.has(Number(t.id))
+          ? { ...t, parentId: null, isIndented: false }
+          : t
+        );
+      }
+      updatedTodos = updatedTodos.map((t, idx) => ({ ...t, position: idx + 1 }));
+      setTodos(updatedTodos);
+    } else {
+      // Fallback: delete only target; lift direct children
+      console.warn('Delete response did not contain deletedIds, applying fallback');
+      const targetId = Number(id);
+      let updatedTodos = todos.filter(t => Number(t.id) !== targetId);
+      updatedTodos = updatedTodos.map(t => Number(t.parentId) === targetId ? { ...t, parentId: null, isIndented: false } : t);
+      updatedTodos = updatedTodos.map((t, idx) => ({ ...t, position: idx + 1 }));
+      setTodos(updatedTodos);
+    }
+  };
+
+  const doDelete = async (id, cascade) => {
+    console.log('🔄 Calling db.deleteTodo...', { cascade });
+    const result = await db.deleteTodo(Number(id), { cascade });
+    console.log('✅ Delete result:', result);
+    applyDeleteResult(id, result);
+  };
+
   const deleteTodo = async (id) => {
     try {
       console.log(`🗑️ DELETE BUTTON CLICKED - Deleting todo with ID: ${id}`);
@@ -268,14 +327,14 @@ function App() {
       }
       
       // Determine if the todo has any descendants in current state
-      const allById = new Map(todos.map(t => [Number(t.id), t]));
       const collectDescendants = (rootId) => {
         const result = new Set();
         const queue = [Number(rootId)];
         while (queue.length) {
           const pid = queue.shift();
           for (const t of todos) {
-            if (Number(t.parentId) === pid) {
+            const p = t.parentId ?? t.parent_id ?? null;
+            if (Number(p) === pid) {
               const cid = Number(t.id);
               if (!result.has(cid)) {
                 result.add(cid);
@@ -289,41 +348,22 @@ function App() {
       const descendantIds = collectDescendants(Number(id));
       const hasDescendants = descendantIds.length > 0;
       
-      // Ask confirmation only if there are descendants
-      let cascade = true;
       if (hasDescendants) {
-        cascade = window.confirm('This item has child tasks.\n\nOK: delete this item AND all its children.\nCancel: delete only this item and keep children (they will move to top level).');
-      }
-      
-      console.log('🔄 Calling db.deleteTodo...', { cascade });
-      const result = await db.deleteTodo(Number(id), { cascade });
-      console.log('✅ Delete result:', result);
-      
-      if (result && result.deletedIds && Array.isArray(result.deletedIds)) {
-        // Filter out deleted
-        const deletedIdSet = new Set(result.deletedIds.map(Number));
-        let updatedTodos = todos.filter(todo => !deletedIdSet.has(Number(todo.id)));
-        
-        // If not cascaded and there are lifted descendants, unindent them
-        if (result.cascaded === false && Array.isArray(result.liftedIds) && result.liftedIds.length) {
-          const lifted = new Set(result.liftedIds.map(Number));
-          updatedTodos = updatedTodos.map(t => lifted.has(Number(t.id))
-            ? { ...t, parentId: null, isIndented: false }
-            : t
-          );
+        if (USE_CUSTOM_DELETE_MODAL) {
+          setDeleteModalState({ id: Number(id), count: descendantIds.length });
+          console.log('[modal] opening delete modal for id', id, 'with', descendantIds.length, 'children');
+          setShowDeleteModal(true);
+          return;
+        } else {
+          const cascade = window.confirm('This item has child tasks.\n\nOK: delete this item AND all its children.\nCancel: delete only this item and keep children (they will move to top level).');
+          await doDelete(id, !!cascade);
+          console.log('Todo deleted successfully');
+          return;
         }
-        // Re-number positions compactly
-        updatedTodos = updatedTodos.map((t, idx) => ({ ...t, position: idx + 1 }));
-        setTodos(updatedTodos);
-      } else {
-        // Fallback path: delete only target; lift direct children
-        console.warn('Delete response did not contain deletedIds, applying fallback');
-        const targetId = Number(id);
-        let updatedTodos = todos.filter(t => Number(t.id) !== targetId);
-        updatedTodos = updatedTodos.map(t => Number(t.parentId) === targetId ? { ...t, parentId: null, isIndented: false } : t);
-        updatedTodos = updatedTodos.map((t, idx) => ({ ...t, position: idx + 1 }));
-        setTodos(updatedTodos);
       }
+
+      // No descendants: proceed with simple delete (cascade true by definition)
+      await doDelete(id, true);
       
       console.log('Todo deleted successfully');
       
@@ -475,8 +515,18 @@ function App() {
     }
     
     e.preventDefault(); // Prevent default drag behavior
-    // New drag session token (used to ignore stale finalize callbacks)
+    // New drag session tokens (invalidate any pending finalize/cleanup)
     dragSessionIdRef.current += 1;
+    dropSessionIdRef.current += 1;
+    if (cleanupTimerRef.current) { try { clearTimeout(cleanupTimerRef.current); } catch {} cleanupTimerRef.current = null; }
+    // Clear any in-flight FLIP animations before starting a new drag
+    document.querySelectorAll('.todo-item.anim-drop').forEach(el => {
+      el.style.transition = '';
+      el.style.transform = '';
+      el.classList.remove('anim-drop');
+    });
+    // Force reflow to commit baseline
+    void document.body.offsetHeight;
     
     // Store the initial indentation state
     const initialIndentationState = {
@@ -883,6 +933,8 @@ function App() {
             el.style.transform = '';
             // Safety sweep: clear any lingering inline transforms across items
             document.querySelectorAll('.todo-item').forEach(n => { n.style.transform = ''; });
+            // Defensive: clear any lingering flip-prep visibility-hiding classes
+            document.querySelectorAll('.todo-item.flip-prep').forEach(n => { n.classList.remove('flip-prep'); });
             draggedIndexRef.current = null;
             targetIndexRef.current = null;
             draggedElementRef.current = null;
@@ -916,6 +968,8 @@ function App() {
             el.removeEventListener('transitionend', finalize);
             el.style.transition = '';
             el.style.transform = '';
+            // Defensive: clear any lingering flip-prep visibility-hiding classes
+            document.querySelectorAll('.todo-item.flip-prep').forEach(n => { n.classList.remove('flip-prep'); });
             draggedIndexRef.current = null;
             targetIndexRef.current = null;
             draggedElementRef.current = null;
@@ -951,22 +1005,16 @@ function App() {
       // Check for possible parent-child relationship
       const previousItem = insertAt > 0 ? updatedTodos[insertAt - 1] : null;
       
-      // Validate parent-child relationships
+      // Preserve indentation during vertical reorders among siblings.
+      // Only unindent if moved to the very top; otherwise keep current parent/indent.
       if (insertAt === 0) {
         // If moved to the top, remove indentation
         movedItem.isIndented = false;
         movedItem.parentId = null;
-      } else if (movedItem.isIndented) {
-        // If item is indented, validate that it can have the previous item as parent
-        if (!previousItem || previousItem.isIndented) {
-          // Previous item is also indented (child), so this item can't be indented
-          // OR no previous item exists, so remove indentation
-          movedItem.isIndented = false;
-          movedItem.parentId = null;
-        } else {
-          // Previous item is not indented (parent), so update parent relationship
-          movedItem.parentId = Number(previousItem.id);
-        }
+      } else {
+        // Do not force-unindent when previous item is also a child; keep existing parent.
+        // The post-process step below will validate and, if needed, reattach to the nearest
+        // previous non-indented item or unindent if none exists above.
       }
       
       // Insert the moved item at the new position
@@ -1041,7 +1089,25 @@ function App() {
       if (draggedElementRef.current) {
         const droppedId = draggedItem.id;
         const wasIndentedAtDrop = draggedElementRef.current.classList.contains('indented');
-        const fromRect = draggedElementRef.current.getBoundingClientRect();
+        // Pre-clear any lingering transforms/transitions before measuring
+        document.querySelectorAll('.todo-item').forEach(el => {
+          el.classList.remove('anim-drop');
+          el.style.transition = '';
+          el.style.transform = '';
+        });
+        // Force reflow to commit the clear so measurements are clean
+        void document.body.offsetHeight;
+
+        // Build affected ids: include all todo items to handle sibling shifts under spam
+        const affectedIds = Array.from(document.querySelectorAll('.todo-item'))
+          .map(el => el.getAttribute('data-id'))
+          .filter(Boolean);
+        // Snapshot BEFORE rects for affected ids
+        const beforeRects = new Map();
+        affectedIds.forEach(id => {
+          const el = document.querySelector(`[data-id="${id}"]`);
+          if (el) beforeRects.set(String(id), el.getBoundingClientRect());
+        });
 
         // Stop tracking immediately and clear any cursor-based/pinning styles on the dragged element
         isDraggingRef.current = false;
@@ -1061,132 +1127,70 @@ function App() {
         // Also drop drag classes now so layout is governed by normal CSS
         draggedElementRef.current.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
 
+        // Reset finalize guard for this drop
+        finalizeStartedRef.current = false;
         // Commit new order and remove placeholder so DOM settles
         setTodos(todosWithUpdatedPositions);
         if (placeholder) placeholder.remove();
 
-        // After render, measure target and FLIP
-        const sessionAtStart = dragSessionIdRef.current;
+        // After render, snapshot AFTER rects and apply unified FLIP animation
+        const currentDropSession = ++dropSessionIdRef.current;
+        if (cleanupTimerRef.current) { try { clearTimeout(cleanupTimerRef.current); } catch {} }
+        // Hide only the dragged item for one frame to avoid duplicate flash
+        const prepEl = document.querySelector(`[data-id="${droppedId}"]`);
+        if (prepEl) prepEl.classList.add('flip-prep');
+        // Double RAF to ensure React commit + layout settled before measuring AFTER rects
         requestAnimationFrame(() => {
-          const newEl = document.querySelector(`[data-id="${droppedId}"]`);
-          // Kick off simultaneous horizontal unindent glides for affected children (excluding the dropped item)
-          unindentedIds
-            .filter(id => Number(id) !== Number(droppedId))
-            .forEach(id => {
-              const childEl = document.querySelector(`[data-id="${id}"]`);
-              if (!childEl) return;
-              // Start from visual indent (60px) and glide to base (0)
-              childEl.style.transition = 'none';
-              childEl.style.transform = 'translateX(60px)';
-              requestAnimationFrame(() => {
-                if (sessionAtStart !== dragSessionIdRef.current) return; // stale
-                void childEl.offsetHeight;
-                childEl.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
-                childEl.style.transform = '';
-              });
-              // Defensive cleanup in case transitionend is missed
-              const onChildEnd = () => {
-                childEl.removeEventListener('transitionend', onChildEnd);
-                childEl.style.transition = '';
-                childEl.style.transform = '';
-              };
-              childEl.addEventListener('transitionend', onChildEnd, { once: true });
-              setTimeout(onChildEnd, DROP_DURATION_MS + 120);
-            });
-          if (!newEl) {
-            // Fallback cleanup
-            const allEls = document.querySelectorAll('.todo-item');
-            allEls.forEach(el => {
-              el.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
-              el.style.transform = '';
+          requestAnimationFrame(() => {
+            // Compute deltas and apply transforms
+            affectedIds.forEach(id => {
+              const el = document.querySelector(`[data-id="${id}"]`);
+              const before = beforeRects.get(String(id));
+              if (!el || !before) return;
+              // Clear any pinning styles before measure
+              el.style.position = '';
+              el.style.top = '';
+              el.style.left = '';
+              el.style.width = '';
+              el.style.height = '';
+              el.style.zIndex = '';
+              el.style.pointerEvents = '';
               el.style.visibility = '';
-            });
-            isDropAnimatingRef.current = false;
-            draggedIndexRef.current = null;
-            targetIndexRef.current = null;
-            draggedElementRef.current = null;
-            dragDirectionRef.current = null;
-            dragOffsetXRef.current = 0;
-            dragThresholdPassed.current = false;
-            document.body.classList.remove('is-dragging');
-            db.updateTodoPositions(todosWithUpdatedPositions).catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
-            return;
-          }
-
-          // Clear any drag-time pinning styles BEFORE measuring target so layout is correct
-          newEl.style.position = '';
-          newEl.style.top = '';
-          newEl.style.left = '';
-          newEl.style.width = '';
-          newEl.style.height = '';
-          newEl.style.zIndex = '';
-          newEl.style.pointerEvents = '';
-          newEl.style.visibility = '';
-
-          const toRect = newEl.getBoundingClientRect();
-          const dy = fromRect.top - toRect.top;
-          // Determine if the dropped item auto-unindented by DOM class comparison
-          const nowIndentedClass = newEl.classList.contains('indented');
-          const autoUnindentDropped = wasIndentedAtDrop && !nowIndentedClass;
-          const dxMeasured = fromRect.left - toRect.left;
-          const dx = Math.abs(dxMeasured) > 1 ? dxMeasured : (autoUnindentDropped ? 60 : 0);
-          // Compose with class-based indent so inline transform doesn't cancel it visually
-          const baseIndent = nowIndentedClass ? 60 : 0;
-
-          const needsAnim = Math.abs(dy) > 1 || Math.abs(dx) > 1;
-          if (needsAnim) {
-            isDropAnimatingRef.current = true;
-            const sessionAtStart = dragSessionIdRef.current;
-            newEl.style.willChange = 'transform';
-            newEl.style.transition = 'none';
-            // Start from current offset, including base indent
-            newEl.style.transform = `translate(${baseIndent + dx}px, ${dy}px)`;
-            requestAnimationFrame(() => {
-              void newEl.offsetHeight;
-              const duration = prefersReducedMotion() ? 0 : (autoUnindentDropped ? (DROP_DURATION_MS + 120) : DROP_DURATION_MS);
-              if (autoUnindentDropped && typeof newEl.animate === 'function' && duration > 0) {
-                // Use WAAPI to ensure bounce easing is honored for the horizontal glide-out
-                const start = `translate(${baseIndent + dx}px, ${dy}px)`;
-                const end = `translate(${baseIndent}px, 0px)`; // baseIndent is 0 when unindenting
-                const anim = newEl.animate(
-                  [
-                    { transform: start },
-                    { transform: end }
-                  ],
-                  { duration, easing: DROP_EASE, fill: 'forwards' }
-                );
-                const sessionAtStart2 = sessionAtStart;
-                anim.addEventListener('finish', () => {
-                  if (sessionAtStart2 !== dragSessionIdRef.current) return;
-                  finalize();
-                }, { once: true });
-                // Fallback finalize in case finish is missed
-                setTimeout(finalize, duration + 60);
-              } else {
-                if (duration === 0) {
-                  newEl.style.transition = 'none';
-                  newEl.style.transform = `translate(${baseIndent}px, 0px)`;
-                  // finalize will run via the outer timeout below
-                } else {
-                  newEl.style.transition = `transform ${duration}ms ${DROP_EASE}`;
-                  // Animate to the base indent for this element's final state
-                  newEl.style.transform = `translate(${baseIndent}px, 0px)`;
-                }
-              }
+              const after = el.getBoundingClientRect();
+              const dxMeasured = before.left - after.left;
+              const dy = before.top - after.top;
+              // Only allow horizontal animation for the dragged item when indent actually changed (e.g., auto-unindent at top)
+              const isIndentedAfter = el.classList.contains('indented');
+              const isDraggedEl = String(id) === String(droppedId);
+              const allowDx = isDraggedEl && (isIndentedAfter !== wasIndentedAtDrop);
+              const useDx = allowDx ? dxMeasured : 0;
+              if (Math.abs(useDx) < 0.5 && Math.abs(dy) < 0.5) return; // ignore subpixel noise
+              el.classList.add('anim-drop');
+              el.style.transition = 'none';
+              // Compose with base indent so we don't momentarily drop horizontal offset
+              const baseXAfter = isIndentedAfter ? 60 : 0; // must match CSS indent translateX
+              if (String(id) === String(droppedId)) el.classList.remove('flip-prep');
+              el.style.transform = `translateX(${baseXAfter}px) translate(${useDx}px, ${dy}px)`;
+              requestAnimationFrame(() => {
+                void el.offsetHeight;
+                el.style.transition = `transform ${DROP_DURATION_MS}ms ${DROP_EASE}`;
+                // Transition back to base-only (keep indent), then cleanup timer will clear inline style
+                el.style.transform = `translateX(${baseXAfter}px)`;
+              });
             });
 
-            const finalize = () => {
-              if (sessionAtStart !== dragSessionIdRef.current) return;
-              newEl.removeEventListener('transitionend', finalize);
-              newEl.style.willChange = '';
-              newEl.style.transition = '';
-              // Clear inline so class-based indent owns the final state
-              newEl.style.transform = '';
-              const allEls = document.querySelectorAll('.todo-item');
-              allEls.forEach(el => {
-                el.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
+            // Schedule single cleanup for this drop
+            cleanupTimerRef.current = setTimeout(() => {
+              if (currentDropSession !== dropSessionIdRef.current) return; // stale
+              document.querySelectorAll('.todo-item.anim-drop').forEach(el => {
+                el.style.transition = '';
                 el.style.transform = '';
-                el.style.visibility = '';
+                el.classList.remove('anim-drop');
+                el.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
+              });
+              // Defensive: ensure no item remains hidden due to stale flip-prep
+              document.querySelectorAll('.todo-item.flip-prep').forEach(el => {
+                el.classList.remove('flip-prep');
               });
               isDropAnimatingRef.current = false;
               draggedIndexRef.current = null;
@@ -1197,32 +1201,11 @@ function App() {
               dragThresholdPassed.current = false;
               document.body.classList.remove('is-dragging');
               document.body.style.userSelect = '';
+              // Persist new positions
               db.updateTodoPositions(todosWithUpdatedPositions)
                 .catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
-            };
-            newEl.addEventListener('transitionend', finalize, { once: true });
-            const duration = prefersReducedMotion() ? 0 : (autoUnindentDropped ? (DROP_DURATION_MS + 120) : DROP_DURATION_MS);
-            setTimeout(finalize, duration + 80);
-          } else {
-            // No visible movement, just clean up
-            const allEls = document.querySelectorAll('.todo-item');
-            allEls.forEach(el => {
-              el.classList.remove('dragging','dragging-vertical','dragging-horizontal','indent-preview');
-              el.style.transform = '';
-              el.style.visibility = '';
-            });
-            isDropAnimatingRef.current = false;
-            draggedIndexRef.current = null;
-            targetIndexRef.current = null;
-            draggedElementRef.current = null;
-            dragDirectionRef.current = null;
-            dragOffsetXRef.current = 0;
-            dragThresholdPassed.current = false;
-            document.body.classList.remove('is-dragging');
-            document.body.style.userSelect = '';
-            db.updateTodoPositions(todosWithUpdatedPositions)
-              .catch(() => db.getAllTodos().then(serverTodos => setTodos(serverTodos)));
-          }
+            }, (prefersReducedMotion() ? 0 : DROP_DURATION_MS) + 100);
+          });
         });
         return; // Done handling drop via FLIP
       }
@@ -1401,181 +1384,198 @@ function App() {
   return (
     <div className={`todo-app ${darkMode ? 'dark-mode' : ''}`}>
       <div className="top-buttons">
-        {!showMenu ? (
-          <>
-            <button className="menu-btn" onClick={toggleMenu}>
-              <img 
-                src="/images/menu_button.svg" 
-                alt="Menu" 
-                width="24" 
-                height="24"
-                className="menu-icon"
-              />
-            </button>
-            <button 
-              className="add-btn" 
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                addEmptyTodo();
-              }}
-              title="Add new todo item"
-            >
-              <img 
-                src="/images/additem.svg" 
-                alt="Add new task" 
-                width="24" 
-                height="24"
-                className="add-icon"
-              />
-            </button>
-            <button className="dark-mode-btn" onClick={toggleDarkMode}>
-              <img 
-                src={darkMode ? "/images/lightmode.svg" : "/images/darkmode.svg"} 
-                alt={darkMode ? "Switch to light mode" : "Switch to dark mode"} 
-                width="24" 
-                height="24"
-                className="mode-icon"
-              />
-            </button>
-          </>
-        ) : (
-          <button className="close-menu-btn" onClick={toggleMenu}>
+        <button className="menu-btn" aria-label="Menu">
+          <img 
+            src="/images/menu_button.svg" 
+            alt="Menu" 
+            width="24" 
+            height="24"
+            className="menu-icon"
+          />
+        </button>
+        <div className="stacked-actions">
+          <button 
+            className="add-btn" 
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              addEmptyTodo();
+            }}
+            title="Add new todo item"
+          >
             <img 
-              src="/images/deleteitem.svg" 
-              alt="Close menu" 
+              src="/images/additem.svg" 
+              alt="Add new task" 
               width="24" 
               height="24"
-              className="close-icon"
+              className="add-icon"
             />
           </button>
-        )}
-      </div>
-      
-      {!showMenu ? (
-        <>
-          {editingTitle ? (
-            <input
-              type="text"
-              className="title-edit-input"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === 'Enter') handleTitleEdit(e);
-              }}
-              onBlur={handleTitleEdit}
-              ref={titleInputRef}
-              autoComplete="off"
-              onMouseDown={(e) => e.stopPropagation()}
+          <button className="dark-mode-btn" onClick={toggleDarkMode}>
+            <img 
+              src={darkMode ? "/images/lightmode.svg" : "/images/darkmode.svg"} 
+              alt={darkMode ? "Switch to light mode" : "Switch to dark mode"} 
+              width="24" 
+              height="24"
+              className="mode-icon"
             />
-          ) : (
-            <h1 onClick={startTitleEdit}>{title}</h1>
-          )}
-          
-          <ul className="todo-list" ref={listRef}>
-            {todos.length === 0 && (
-              <li className="empty-list">No tasks yet. Add one to get started!</li>
-            )}
-            {todos.map((todo, index) => (
-              <li 
-                key={todo.id}
-                data-id={todo.id}
-                className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''} ${todo.isIndented ? 'indented' : ''}`}
-                ref={(element) => setTodoItemRef(element, todo.id)}
-              >
-                <div 
-                  className="drag-handle" 
-                  onMouseDown={(e) => handleDragStart(e, todo, index)}
-                  title="Drag to reorder or indent"
-                >
-                  <img 
-                    src="/images/drag_grip.svg" 
-                    alt="Drag handle" 
-                    width="18" 
-                    height="18"
-                    className="drag-icon"
-                  />
-                </div>
+          </button>
+        </div>
+      </div>
 
-                <div className="todo-checkbox-container" onClick={(e) => e.stopPropagation()}>
-                  <label className="custom-checkbox" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      className="hidden-checkbox"
-                      checked={todo.completed}
-                      onChange={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        toggleTodo(todo.id);
-                      }}
-                    />
-                    <img 
-                      src={todo.completed ? "/images/checkboxfull.svg" : "/images/checkboxempty.svg"} 
-                      alt={todo.completed ? "Checked" : "Unchecked"} 
-                      className="checkbox-image" 
-                      width="20" 
-                      height="20"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        toggleTodo(todo.id);
-                      }}
-                    />
-                  </label>
-                </div>
+      {editingTitle ? (
+        <input
+          type="text"
+          className="title-edit-input"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') handleTitleEdit(e);
+          }}
+          onBlur={handleTitleEdit}
+          ref={titleInputRef}
+          autoComplete="off"
+          onMouseDown={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <h1 onClick={startTitleEdit}>{title}</h1>
+      )}
+      
+      <ul className="todo-list" ref={listRef}>
+        {todos.length === 0 && (
+          <li className="empty-list">No tasks yet. Add one to get started!</li>
+        )}
+        {todos.map((todo, index) => (
+          <li 
+            key={todo.id}
+            data-id={todo.id}
+            className={`todo-item ${todo.completed ? 'completed' : ''} ${todo.isEmpty ? 'empty-item' : ''} ${todo.isIndented ? 'indented' : ''}`}
+            ref={(element) => setTodoItemRef(element, todo.id)}
+          >
+            <div 
+              className="drag-handle" 
+              onMouseDown={(e) => handleDragStart(e, todo, index)}
+              title="Drag to reorder or indent"
+            >
+              <img 
+                src="/images/drag_grip.svg" 
+                alt="Drag handle" 
+                width="18" 
+                height="18"
+                className="drag-icon"
+              />
+            </div>
 
-                {editingId === todo.id ? (
-                  <input
-                    type="text"
-                    className="edit-input"
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      e.stopPropagation();
-                      if (e.key === 'Enter') handleEditTodo(e, todo.id);
-                    }}
-                    onBlur={(e) => handleEditTodo(e, todo.id)}
-                    ref={setEditInputRef}
-                    placeholder="Empty task"
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <span 
-                    className="todo-text" 
-                    onClick={(e) => startTaskEdit(todo, e)}
-                  >
-                    {todo.text || <span className="placeholder-text">Empty task</span>}
-                  </span>
-                )}
-
-                <button 
-                  className="delete-btn" 
-                  onClick={(e) => {
+            <div className="todo-checkbox-container" onClick={(e) => e.stopPropagation()}>
+              <label className="custom-checkbox" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  className="hidden-checkbox"
+                  checked={todo.completed}
+                  onChange={(e) => {
+                    e.preventDefault();
                     e.stopPropagation();
-                    deleteTodo(todo.id);
+                    toggleTodo(todo.id);
                   }}
-                  onMouseDown={(e) => e.stopPropagation()} // Prevent drag start
-                >
-                  <img 
-                    src="/images/deleteitem.svg" 
-                    alt="Delete task" 
-                    width="18" 
-                    height="18"
-                    className="delete-icon"
+                />
+                <img 
+                  src={todo.completed ? "/images/checkboxfull.svg" : "/images/checkboxempty.svg"} 
+                  alt={todo.completed ? "Checked" : "Unchecked"} 
+                  className="checkbox-image" 
+                  width="20" 
+                  height="20"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleTodo(todo.id);
+                  }}
+                />
+              </label>
+            </div>
+            
+            {editingId === todo.id ? (
+              <input
+                type="text"
+                className="edit-input"
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') handleEditTodo(e, todo.id);
+                }}
+                onBlur={(e) => handleEditTodo(e, todo.id)}
+                ref={setEditInputRef}
+                placeholder="Empty task"
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <span 
+                className="todo-text" 
+                onClick={(e) => startTaskEdit(todo, e)}
+              >
+                {todo.text || <span className="placeholder-text">Empty task</span>}
+              </span>
+            )}
+            
+            <button 
+              className="delete-btn" 
+              onClick={(e) => {
+                e.stopPropagation();
+                deleteTodo(todo.id);
+              }}
+              onMouseDown={(e) => e.stopPropagation()} // Prevent drag start
+            >
+              <img 
+                src="/images/deleteitem.svg" 
+                alt="Delete task" 
+                width="18" 
+                height="18"
+                className="delete-icon"
+              />
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {showDeleteModal && ReactDOM.createPortal(
+        (
+          <div className="modal-overlay" role="presentation" onClick={handleCancelDelete}>
+            <div className="modal" role="dialog" aria-modal="true" aria-labelledby="del-title" onClick={(e) => e.stopPropagation()}>
+              <h3 id="del-title">Delete task?</h3>
+              <p>
+                This task has {deleteModalState.count} {deleteModalState.count === 1 ? 'child' : 'children'}. Would you like to delete:
+              </p>
+              <div className="modal-actions">
+                <button className="btn btn-icon danger btn-all" onClick={handleConfirmCascade} aria-label="Delete all" title="Delete all">
+                  <img
+                    src={darkMode ? "/images/deleteall_dark.svg" : "/images/deleteall_light.svg"}
+                    alt=""
+                    aria-hidden="true"
                   />
                 </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : (
-        <div className="menu-screen">
-          {/* Empty menu screen */}
-        </div>
+                <button className="btn btn-icon btn-only" onClick={handleConfirmLift} aria-label="Delete only this" title="Delete only this">
+                  <img
+                    src={darkMode ? "/images/deletethisonly_dark.svg" : "/images/deletethisonly_light.svg"}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </button>
+                <button className="btn btn-icon secondary btn-cancel" onClick={handleCancelDelete} aria-label="Cancel" title="Cancel">
+                  <img
+                    src={darkMode ? "/images/deletecancel_dark.svg" : "/images/deletecancel_light.svg"}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </button>
+              </div>
+            </div>
+          </div>
+        ),
+        document.body
       )}
-      </div>
+    </div>
   )
 }
 

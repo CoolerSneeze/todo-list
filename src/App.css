@@ -1,3 +1,7 @@
+.btn .icon {
+  display: inline-block;
+}
+
 #root {
   max-width: 500px;
   margin: 0 auto;
@@ -110,8 +114,18 @@ body.dark-mode .title-edit-input {
   top: 20px;
   left: 20px;
   display: flex;
-  gap: 10px;
+  flex-direction: column; /* stack menu above actions */
+  align-items: flex-start;
+  gap: 8px;
   z-index: 10;
+}
+
+/* Container to stack Add and Dark buttons vertically under the menu */
+.stacked-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .add-btn, .dark-mode-btn, .menu-btn, .close-menu-btn {
@@ -179,7 +193,7 @@ body.is-dragging .todo-list {
   padding: 10px 0;
   width: 100%;
   margin-bottom: 5px;
-  transition: background-color 0.2s ease, padding-left 0.3s ease, transform 0.1s ease-out;
+  transition: background-color 0.2s ease, padding-left 0.3s ease;
   height: 40px; /* Increased height for better vertical centering */
   cursor: default;
   position: relative;
@@ -202,6 +216,11 @@ body.is-dragging .todo-list {
 .todo-item.indented:first-of-type {
   margin-top: 5px;
   border-top-left-radius: 8px;
+}
+
+/* Hide only the dragged item for one frame between commit and FLIP to prevent double-paint flicker */
+.todo-item.flip-prep {
+  visibility: hidden;
 }
 
 /* Visual connector for parent-child relationships */
@@ -249,6 +268,17 @@ body.dark-mode .todo-item.indented:before {
   z-index: 2;
 }
 
+/* Unified FLIP drop animation class */
+.todo-item.anim-drop {
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .todo-item.anim-drop {
+    transition: none !important;
+  }
+}
+
 body.dark-mode .todo-item:hover {
   background-color: rgba(255, 255, 255, 0.02);
 }
@@ -277,6 +307,137 @@ body.dark-mode .drop-ghost {
   background-color: rgba(40, 40, 40, 0.95);
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3), 0 6px 6px rgba(0, 0, 0, 0.33);
 }
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: #fff;
+  color: #222;
+  border-radius: 10px;
+  padding: 18px 20px;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.2);
+}
+
+body.dark-mode .modal {
+  background: #2a2a2a;
+  color: #f0f0f0;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.6);
+}
+
+.modal h3 {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+}
+
+.modal p {
+  margin: 0 0 14px 0;
+  opacity: 0.9;
+  letter-spacing: 0.3px; /* slightly increase character spacing for readability */
+}
+
+.modal-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: flex-end;
+}
+
+.btn {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.1);
+  background: #f4f4f4;
+  color: #222;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* === Modal icon buttons: base reset ===
+   Removes all default button chrome so only your SVG shows. 
+   Edit here if you still see backgrounds/borders behind icons. */
+.modal .btn.btn-icon {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  line-height: 0;
+}
+/* Hover/active overrides for icon buttons inside modal.
+   Keep transparent so no gray/red hover effects appear. */
+.modal .btn.btn-icon:hover,
+.modal .btn.btn-icon:active {
+  background: transparent !important;
+  filter: none !important;
+  box-shadow: none !important;
+}
+/* Variant overrides (danger/secondary) for modal icon buttons.
+   Prevents variant styles from reintroducing backgrounds/borders. */
+.modal .btn.btn-icon.danger,
+.modal .btn.btn-icon.secondary {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+.modal .btn.btn-icon.danger:hover,
+.modal .btn.btn-icon.secondary:hover {
+  background: transparent !important;
+  filter: none !important;
+}
+/* Icon size for modal buttons.
+   Increase/decrease width to scale your SVGs. Height stays proportional. */
+.modal .btn.btn-icon img {
+  display: block;
+  width: 45px; /* larger icons per feedback */
+  height: auto;
+}
+/* Per-button sizing (edit these to size each icon independently)
+   Use the full selector with .btn.btn-icon to beat the generic rule's specificity.
+   - Delete all icon:   .modal .btn.btn-icon.btn-all img
+   - This only icon:    .modal .btn.btn-icon.btn-only img
+   - Cancel icon:       .modal .btn.btn-icon.btn-cancel img
+   Tip: keep height:auto for correct aspect ratio */
+.modal .btn.btn-icon.btn-all img    { width: 52px; }
+.modal .btn.btn-icon.btn-only img   { width: 120px; }
+.modal .btn.btn-icon.btn-cancel img { width: 100px; }
+/* Keyboard focus ring for accessibility. */
+.modal .btn.btn-icon:focus-visible {
+  outline: 2px solid #888;
+  outline-offset: 2px;
+}
+
+body.dark-mode .btn {
+  background: #3a3a3a;
+  border-color: rgba(255,255,255,0.12);
+  color: #f0f0f0;
+}
+
+.btn:hover { filter: brightness(0.97); }
+body.dark-mode .btn:hover { filter: brightness(1.05); }
+
+.btn.secondary {
+  background: transparent;
+}
+
+.btn.danger {
+  background: #e53935;
+  color: #fff;
+  border-color: transparent;
+}
+
+.btn.danger:hover { filter: brightness(0.95); }
 
 /* Prevent accidental text selection while allowing editing in inputs */
 html, body, .todo-app, .todo-list, .todo-item, .drag-handle, .custom-checkbox, .checkbox-image, .delete-btn, .top-buttons, h1, .todo-text, .empty-list, .menu-screen {
