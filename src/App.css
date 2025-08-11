@@ -70,8 +70,14 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  top: -35px;
+  position: fixed;              /* never moves */
+  top: 0;
+  left: 0;
+  width: 100vw;                 /* full width */
+  margin: 0;
+  z-index: 12;                  /* above bg bar; below floating UI if needed */
+  background-color: var(--header-bg, transparent);
+  transition: background-color 200ms ease, color 200ms ease;
   font-family: 'Covered By Your Grace', cursive;
   font-size: 2.8em;
   font-weight: bold;
@@ -100,24 +106,82 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  top: -35px;
-  height: 75px;
+  position: fixed;              /* never moves while editing */
+  top: 0;
+  left: 0;
+  z-index: 13; /* above h1 */
+  background-color: var(--header-bg, transparent);
+  width: 100vw;
+  margin: 0;
+  transition: background-color 200ms ease, color 200ms ease;
+  height: var(--header-height);
 }
 
 body.dark-mode .title-edit-input {
   color: #e0e0e0;
 }
 
+/* Header background color variable for sticky elements */
+body { --header-bg: #ffffff; }
+/*
+  EDIT HERE: Header-to-list gap (single source of truth)
+  Change this to control the vertical space between the fixed title bar and the first todo.
+  Typical comfortable range: 100–115px.
+*/
+:root { --header-gap: 80px; }
+/*
+  EDIT HERE: Header visual height and cover amount
+  - --header-height: the visible title bar height (matches the title/input height)
+  - --header-cover: extra background coverage BELOW the title to control where items disappear under it
+    Increase this to move the cutoff line LOWER without changing where the list starts.
+*/
+:root { --header-height: 75px; --header-cover: 10px; }
+body.dark-mode { --header-bg: #121212; }
+body { transition: background-color 200ms ease, color 200ms ease; }
+
+/* Hide page scrollbar visually but keep scrolling behavior */
+html::-webkit-scrollbar { width: 0; height: 0; }
+body::-webkit-scrollbar { width: 0; height: 0; }
+html { -ms-overflow-style: none; scrollbar-width: none; }
+body { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Fixed full-width background bar behind the title */
+.header-fixed-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: calc(var(--header-height) + var(--header-cover));
+  width: 100vw;                 /* full-bleed */
+  background: var(--header-bg, transparent);
+  z-index: 2;                   /* above list (1), below floating side buttons */
+  pointer-events: none;
+  transition: background-color 200ms ease;
+}
+
+/* Spacer element no longer needed because body has padding-top: var(--header-gap) */
+.header-spacer { height: 0; }
+
+/* Overlay to mask the native scrollbar visually (Windows/Chromium) */
+.scrollbar-cover {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 12px; /* typical Win scrollbar width */
+  background: var(--header-bg, transparent);
+  pointer-events: none; /* don't block clicks */
+  z-index: 4; /* below sticky header (z=5/6) and modal (z=1000) */
+}
+
 .top-buttons {
   position: fixed;
   top: 20px;
+  z-index: 10000; /* ensure visible above header/title across stacking contexts */
   left: 20px;
   display: flex;
   flex-direction: column; /* stack menu above actions */
   align-items: flex-start;
-  gap: 8px;
-  z-index: 10;
+  gap: 12px;
 }
 
 /* Container to stack Add and Dark buttons vertically under the menu */
@@ -178,9 +242,12 @@ body.dark-mode .close-menu-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin-top: -30px;
+  margin-top: 0;
   position: relative;
+  top: var(--header-gap); /* visually offset under fixed header without adding page height */
   z-index: 1;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 body.is-dragging .todo-list {

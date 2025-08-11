@@ -348,13 +348,25 @@ export function createTodo(input) {
     const completed = payload?.completed ? 1 : 0;
     const isEmpty = payload?.isEmpty ? 1 : (text.trim() === '' ? 1 : 0);
     const parentId = payload?.parentId != null ? Number(payload.parentId) : null;
-    const isIndented = payload?.isIndented ? 1 : 0;
+    // Validate parent and coerce indentation rules
+    if (parentId != null) {
+      const p = stmt('SELECT id, list_id FROM todos WHERE id=?').get(parentId);
+      if (!p) throw new Error('Parent todo not found');
+      if (Number(p.list_id) !== listId) throw new Error('Parent must be in the same list');
+    }
+    // isIndented mirrors presence of parentId
+    const isIndented = parentId != null ? 1 : 0;
 
     // Determine position if not supplied
     let position = Number(payload?.position);
     if (!position || position <= 0) {
       const row = stmt('SELECT COALESCE(MAX(position), 0) as maxPos FROM todos WHERE list_id=?').get(listId);
       position = Number(row.maxPos) + 1;
+    }
+
+    // Disallow indenting the first item
+    if (parentId != null && position === 1) {
+      throw new Error('Cannot indent the first item in the list');
     }
 
     const ins = stmt(`
@@ -373,15 +385,38 @@ export function createTodo(input) {
 export function updateTodo(id, patch) {
   const d = getDb();
   const tx = d.transaction((tid, p) => {
-    const row = stmt('SELECT id, list_id FROM todos WHERE id=?').get(tid);
+    const row = stmt('SELECT id, list_id, parent_id as parentId, position FROM todos WHERE id=?').get(tid);
     if (!row) throw new Error('Todo not found');
+    // Determine target parent and position for validation
+    const targetParentId = (Object.prototype.hasOwnProperty.call(p, 'parentId') ? (p.parentId == null ? null : Number(p.parentId)) : row.parentId);
+    const targetPosition = (Object.prototype.hasOwnProperty.call(p, 'position') ? Number(p.position) : Number(row.position));
+    // Parent must exist and be in the same list
+    if (targetParentId != null) {
+      if (Number(targetParentId) === Number(tid)) throw new Error('Cannot set parent to self');
+      const pr = stmt('SELECT id, list_id, parent_id FROM todos WHERE id=?').get(targetParentId);
+      if (!pr) throw new Error('Parent todo not found');
+      if (Number(pr.list_id) !== Number(row.list_id)) throw new Error('Parent must be in the same list');
+      // Cycle guard: walk up ancestor chain
+      let cur = pr;
+      while (cur && cur.parent_id != null) {
+        if (Number(cur.parent_id) === Number(tid)) {
+          throw new Error('Cannot create cyclic parent relationship');
+        }
+        cur = stmt('SELECT id, parent_id FROM todos WHERE id=?').get(cur.parent_id);
+      }
+    }
+    // Disallow indenting first item
+    if (targetParentId != null && targetPosition === 1) {
+      throw new Error('Cannot indent the first item in the list');
+    }
     // Build dynamic set clause safely for allowed fields
     const allowed = {
       text: (v) => String(v ?? ''),
       completed: (v) => (v ? 1 : 0),
       isEmpty: (v) => (v ? 1 : 0),
       parentId: (v) => (v == null ? null : Number(v)),
-      isIndented: (v) => (v ? 1 : 0),
+      // Coerce isIndented to mirror parentId after validation
+      isIndented: () => (targetParentId != null ? 1 : 0),
       position: (v) => (v == null ? undefined : Number(v))
     };
     const sets = [];
@@ -390,7 +425,11 @@ export function updateTodo(id, patch) {
     if (Object.prototype.hasOwnProperty.call(p, 'completed')) { sets.push('completed=?'); vals.push(allowed.completed(p.completed)); }
     if (Object.prototype.hasOwnProperty.call(p, 'isEmpty')) { sets.push('is_empty=?'); vals.push(allowed.isEmpty(p.isEmpty)); }
     if (Object.prototype.hasOwnProperty.call(p, 'parentId')) { sets.push('parent_id=?'); vals.push(allowed.parentId(p.parentId)); }
-    if (Object.prototype.hasOwnProperty.call(p, 'isIndented')) { sets.push('is_indented=?'); vals.push(allowed.isIndented(p.isIndented)); }
+    // Always keep is_indented consistent with parent_id if either parentId or isIndented is present
+    if (Object.prototype.hasOwnProperty.call(p, 'parentId') || Object.prototype.hasOwnProperty.call(p, 'isIndented')) {
+      sets.push('is_indented=?');
+      vals.push(allowed.isIndented());
+    }
     if (Object.prototype.hasOwnProperty.call(p, 'position')) { const v = allowed.position(p.position); if (v !== undefined) { sets.push('position=?'); vals.push(v); } }
     if (!sets.length) {
       // nothing to update, return current row

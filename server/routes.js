@@ -99,6 +99,57 @@ export function registerApi(server) {
         return;
       }
 
+      // Dev maintenance endpoints (no-op in production usage)
+      if (pathname === '/api/dev/maintenance/analyze' && req.method === 'POST') {
+        (async () => {
+          try {
+            const mod = await import('./db.js');
+            const d = mod.getDb();
+            d.exec('ANALYZE');
+            return sendJson(res, 200, { ok: true, op: 'ANALYZE' });
+          } catch (e) {
+            console.error('[api] POST /api/dev/maintenance/analyze error:', e);
+            const { status, message } = classifyDbError(e);
+            return sendJson(res, status, { ok: false, error: message });
+          }
+        })();
+        return;
+      }
+
+      if (pathname === '/api/dev/maintenance/vacuum' && req.method === 'POST') {
+        (async () => {
+          try {
+            const mod = await import('./db.js');
+            const d = mod.getDb();
+            d.exec('VACUUM');
+            return sendJson(res, 200, { ok: true, op: 'VACUUM' });
+          } catch (e) {
+            console.error('[api] POST /api/dev/maintenance/vacuum error:', e);
+            const { status, message } = classifyDbError(e);
+            return sendJson(res, status, { ok: false, error: message });
+          }
+        })();
+        return;
+      }
+
+      if (pathname === '/api/dev/export' && req.method === 'GET') {
+        (async () => {
+          try {
+            const mod = await import('./db.js');
+            const d = mod.getDb();
+            const settings = d.prepare('SELECT id, title, dark_mode, current_list_id FROM settings WHERE id=1').get() || null;
+            const lists = d.prepare('SELECT id, name, created_at, updated_at FROM lists ORDER BY id').all();
+            const todos = d.prepare('SELECT id, text, completed, is_empty as isEmpty, parent_id as parentId, is_indented as isIndented, position, list_id as listId FROM todos ORDER BY list_id, position, id').all();
+            return sendJson(res, 200, { ok: true, settings, lists, todos });
+          } catch (e) {
+            console.error('[api] GET /api/dev/export error:', e);
+            const { status, message } = classifyDbError(e);
+            return sendJson(res, status, { ok: false, error: message });
+          }
+        })();
+        return;
+      }
+
       if (url === '/api/todos/positions' && req.method === 'PATCH') {
         (async () => {
           try {
@@ -151,7 +202,7 @@ export function registerApi(server) {
             const body = await readJson(req);
             const title = String(body?.title ?? '');
             const mod = await import('./db.js');
-            const row = mod.setTitle(title);
+            const row = await withRetries(() => Promise.resolve(mod.setTitle(title)));
             return sendJson(res, 200, { ok: true, settings: row });
           } catch (e) {
             console.error('[api] PATCH /api/settings/title error:', e);
@@ -167,7 +218,7 @@ export function registerApi(server) {
           try {
             const body = await readJson(req);
             const mod = await import('./db.js');
-            const row = mod.setDarkMode(!!body?.dark_mode);
+            const row = await withRetries(() => Promise.resolve(mod.setDarkMode(!!body?.dark_mode)));
             return sendJson(res, 200, { ok: true, settings: row });
           } catch (e) {
             console.error('[api] PATCH /api/settings/dark-mode error:', e);
@@ -199,10 +250,37 @@ export function registerApi(server) {
           try {
             const body = await readJson(req);
             const mod = await import('./db.js');
-            const out = mod.setCurrentList(Number(body?.id));
+            const out = await withRetries(() => Promise.resolve(mod.setCurrentList(Number(body?.id))));
             return sendJson(res, 200, { ok: true, id: out?.id ?? body?.id });
           } catch (e) {
             console.error('[api] PATCH /api/settings/current-list error:', e);
+            const { status, message } = classifyDbError(e);
+            return sendJson(res, status, { ok: false, error: message });
+          }
+        })();
+        return;
+      }
+
+      // DB health snapshot: expose key PRAGMAs and a quick integrity_check
+      if (url === '/api/health/db' && req.method === 'GET') {
+        (async () => {
+          try {
+            const mod = await import('./db.js');
+            const d = mod.getDb();
+            const journal = d.pragma('journal_mode', { simple: true });
+            const foreignKeys = d.pragma('foreign_keys', { simple: true });
+            const busyTimeout = d.pragma('busy_timeout', { simple: true });
+            const synchronous = d.pragma('synchronous', { simple: true });
+            // Lightweight integrity_check (fast on small DBs). If performance becomes an issue, we can cache on startup.
+            let integrity = 'ok';
+            try { integrity = d.pragma('integrity_check', { simple: true }); } catch {}
+            return sendJson(res, 200, {
+              ok: true,
+              pragmas: { journal_mode: journal, foreign_keys: foreignKeys, busy_timeout: busyTimeout, synchronous },
+              integrity
+            });
+          } catch (e) {
+            console.error('[api] GET /api/health/db error:', e);
             const { status, message } = classifyDbError(e);
             return sendJson(res, status, { ok: false, error: message });
           }

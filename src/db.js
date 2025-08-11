@@ -298,16 +298,11 @@ const db = {
       if (!r.ok) throw new Error('todos fetch failed');
       const data = await r.json();
       const rows = Array.isArray(data?.todos) ? data.todos : [];
-      // Keep local mirror in sync for now
-      todos = rows.map(t => ({ ...t }));
-      saveTodos();
       clog('Retrieved', rows.length, 'todos (API-backed) for list', listId);
       return rows.map(t => ({ ...t }));
     } catch (e) {
-      cwarn('Falling back to LS todos due to API error:', e);
-      const listTodos = todosOf(currentListId);
-      clog('Retrieved', listTodos.length, 'todos (LS-backed) for list', currentListId);
-      return listTodos.map(t => ({ ...t }));
+      cwarn('Todos API error:', e);
+      throw e;
     }
   },
 
@@ -332,25 +327,10 @@ const db = {
       const data = await r.json();
       const created = data?.todo;
       if (!created) throw new Error('no todo in response');
-      // Mirror to LS to keep compatibility during migration
-      todos.push({ ...created });
-      saveTodos();
       return { ...created };
     } catch (e) {
-      cwarn('Create todo API failed; creating LS fallback:', e);
-      const newTodo = {
-        id: nextId++,
-        text: todo.text || '',
-        completed: !!todo.completed,
-        isEmpty: todo.isEmpty !== undefined ? !!todo.isEmpty : (todo.text?.trim() ? false : true),
-        parentId: todo.parentId || null,
-        isIndented: !!todo.isIndented,
-        position: todo.position || nextPositionFor(currentListId),
-        listId: currentListId
-      };
-      todos.push(newTodo);
-      saveTodos();
-      return { ...newTodo };
+      cwarn('Create todo API failed:', e);
+      throw e;
     }
   },
 
@@ -369,29 +349,11 @@ const db = {
       const data = await r.json();
       const updated = data?.todo;
       if (!updated) throw new Error('no todo in response');
-      // Mirror to LS to keep compatibility during migration
-      const index = todos.findIndex(t => t.id === updated.id);
-      if (index !== -1) {
-        // keep listId stable with server's listId
-        todos[index] = { ...todos[index], ...updated, listId: updated.listId };
-      } else {
-        todos.push({ ...updated });
-      }
-      saveTodos();
       clog('Updated todo (API-backed):', updated);
       return { ...updated };
     } catch (e) {
-      cwarn('Update todo API failed; updating LS as fallback:', e);
-      const index = todos.findIndex(t => t.id === todo.id);
-      if (index === -1) {
-        throw new Error(`Todo with ID ${todo.id} not found`);
-      }
-      // Prevent moving across lists via updateTodo; keep original listId stable
-      const original = todos[index];
-      todos[index] = { ...original, ...todo, listId: original.listId };
-      saveTodos();
-      clog('Updated todo (LS-backed):', todos[index]);
-      return Promise.resolve(todos[index]);
+      cwarn('Update todo API failed:', e);
+      throw e;
     }
   },
   
@@ -415,30 +377,11 @@ const db = {
       if (!r.ok) throw new Error('bulk positions update failed');
       const data = await r.json();
       if (!data?.ok) throw new Error('bulk positions not ok');
-      // Mirror to LS for migration compatibility
-      payload.forEach(u => {
-        const index = todos.findIndex(t => Number(t.id) === u.id);
-        if (index !== -1) {
-          todos[index] = { ...todos[index], position: u.position, parentId: u.parentId, isIndented: u.isIndented };
-        }
-      });
-      const listId = data?.listId ?? currentListId;
-      if (listId) compactPositions(listId);
-      saveTodos();
       console.log('Updated todo positions (API-backed):', { count: payload.length });
       return updatedTodos;
     } catch (e) {
-      console.warn('Positions API failed; updating LS as fallback:', e);
-      // Fallback to previous LS behavior
-      updatedTodos.forEach(updatedTodo => {
-        const index = todos.findIndex(t => t.id === updatedTodo.id);
-        if (index !== -1) {
-          todos[index] = { ...todos[index], ...updatedTodo, listId: todos[index].listId };
-        }
-      });
-      compactPositions(currentListId);
-      saveTodos();
-      return updatedTodos;
+      console.warn('Positions API failed:', e);
+      throw e;
     }
   },
   
@@ -452,62 +395,11 @@ const db = {
       const deletedIds = Array.isArray(data?.deletedIds) ? data.deletedIds : [id];
       const cascaded = !!data?.cascaded;
       const liftedIds = Array.isArray(data?.liftedIds) ? data.liftedIds : [];
-      const listId = data?.listId ?? (todos.find(t => t.id === id)?.listId);
-
-      // Mirror to LS
-      if (cascaded) {
-        todos = todos.filter(t => !deletedIds.includes(t.id));
-      } else {
-        // Delete only parent and lift descendants
-        todos = todos.filter(t => t.id !== id);
-        if (liftedIds.length) {
-          todos = todos.map(t => liftedIds.includes(t.id) ? { ...t, parentId: null, isIndented: false } : t);
-        }
-      }
-      // Compact local positions for that list
-      if (listId) compactPositions(listId);
-      saveTodos();
       console.log('Deleted todo (API-backed):', { id, deletedIds, cascaded, liftedIds });
       return { success: true, deletedIds, cascaded, liftedIds };
     } catch (e) {
-      console.warn('Delete todo API failed; updating LS as fallback:', e);
-      // Fallback to previous LS behavior
-      console.log('🔥 DELETE (LS-backed) called with ID:', id, 'options:', options);
-      const todoIndex = todos.findIndex(t => t.id === id);
-      if (todoIndex === -1) {
-        console.error('❌ Todo not found with ID:', id);
-        throw new Error(`Todo with ID ${id} not found`);
-      }
-      const collectDescendants = (parentIds) => {
-        const result = [];
-        const queue = [...parentIds];
-        while (queue.length) {
-          const pid = queue.shift();
-          const children = todos.filter(t => t.parentId === pid).map(t => t.id);
-          for (const cid of children) {
-            if (!result.includes(cid)) { result.push(cid); queue.push(cid); }
-          }
-        }
-        return result;
-      };
-      const descendantIds = collectDescendants([id]);
-      const hasDescendants = descendantIds.length > 0;
-      if (options.cascade) {
-        const deletedIds = [id, ...descendantIds];
-        const listId = todos[todoIndex].listId;
-        todos = todos.filter(t => !deletedIds.includes(t.id));
-        compactPositions(listId);
-        saveTodos();
-        return { success: true, deletedIds, cascaded: true };
-      } else {
-        todos = todos.filter(t => t.id !== id);
-        if (hasDescendants) {
-          todos = todos.map(t => (descendantIds.includes(t.id) ? { ...t, parentId: null, isIndented: false } : t));
-        }
-        compactPositions(currentListId);
-        saveTodos();
-        return { success: true, deletedIds: [id], cascaded: false, liftedIds: descendantIds };
-      }
+      console.warn('Delete todo API failed:', e);
+      throw e;
     }
   }
 };

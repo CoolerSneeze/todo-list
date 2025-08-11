@@ -428,8 +428,8 @@ function App() {
     // Get the element's bounding rectangle
     const rect = textElement.getBoundingClientRect();
     
-    // Get click position relative to the element
-    const x = e.clientX - rect.left;
+    // Get click position relative to the element box
+    let x = e.clientX - rect.left;
     
     // Direct pixel-based approach - go character by character and find closest match
     let currentPosition = 0;
@@ -441,6 +441,26 @@ function App() {
     const ctx = canvasRef.current.getContext('2d');
     ctx.font = `${computedStyle.fontWeight} ${computedStyle.fontSize} ${computedStyle.fontFamily}`;
     ctx.textBaseline = 'top';
+    
+    // Determine where the rendered text actually starts inside the element box.
+    // Accounts for text-align (left/center/right) and padding.
+    const paddingLeft = parseFloat(computedStyle.paddingLeft) || 0;
+    const paddingRight = parseFloat(computedStyle.paddingRight) || 0;
+    const contentWidth = rect.width - paddingLeft - paddingRight;
+    const fullTextWidth = ctx.measureText(text).width;
+    let textStartX = paddingLeft; // default for left alignment
+    const align = (computedStyle.textAlign || 'left').toLowerCase();
+    if (align === 'center') {
+      textStartX = paddingLeft + Math.max(0, (contentWidth - fullTextWidth) / 2);
+    } else if (align === 'right' || align === 'end') {
+      textStartX = Math.max(paddingLeft, rect.width - paddingRight - fullTextWidth);
+    }
+    
+    // Convert click to be relative to the start of the text run
+    x = x - textStartX;
+    // Clamp within the text bounds so clicks in the empty area map to ends cleanly
+    if (x < 0) x = 0;
+    if (x > fullTextWidth) x = fullTextWidth;
     
     // Check position character by character to find closest match
     while (currentPosition <= text.length) {
@@ -1102,11 +1122,15 @@ function App() {
         const affectedIds = Array.from(document.querySelectorAll('.todo-item'))
           .map(el => el.getAttribute('data-id'))
           .filter(Boolean);
-        // Snapshot BEFORE rects for affected ids
+        // Snapshot BEFORE rects and indent state for affected ids
         const beforeRects = new Map();
+        const beforeIndented = new Map();
         affectedIds.forEach(id => {
           const el = document.querySelector(`[data-id="${id}"]`);
-          if (el) beforeRects.set(String(id), el.getBoundingClientRect());
+          if (el) {
+            beforeRects.set(String(id), el.getBoundingClientRect());
+            beforeIndented.set(String(id), el.classList.contains('indented'));
+          }
         });
 
         // Stop tracking immediately and clear any cursor-based/pinning styles on the dragged element
@@ -1162,14 +1186,18 @@ function App() {
               // Only allow horizontal animation for the dragged item when indent actually changed (e.g., auto-unindent at top)
               const isIndentedAfter = el.classList.contains('indented');
               const isDraggedEl = String(id) === String(droppedId);
-              const allowDx = isDraggedEl && (isIndentedAfter !== wasIndentedAtDrop);
+              // Allow horizontal glide if indent state changed for either the dragged element
+              // or any other element that auto-(un)indented as a result of the drop
+              const wasIndentedBefore = beforeIndented.get(String(id));
+              const allowDx = (isDraggedEl && (isIndentedAfter !== wasIndentedAtDrop)) || (!isDraggedEl && (wasIndentedBefore !== isIndentedAfter));
               const useDx = allowDx ? dxMeasured : 0;
+              // Always unhide the dropped element even if no animation is needed
+              if (isDraggedEl) el.classList.remove('flip-prep');
               if (Math.abs(useDx) < 0.5 && Math.abs(dy) < 0.5) return; // ignore subpixel noise
               el.classList.add('anim-drop');
               el.style.transition = 'none';
               // Compose with base indent so we don't momentarily drop horizontal offset
               const baseXAfter = isIndentedAfter ? 60 : 0; // must match CSS indent translateX
-              if (String(id) === String(droppedId)) el.classList.remove('flip-prep');
               el.style.transform = `translateX(${baseXAfter}px) translate(${useDx}px, ${dy}px)`;
               requestAnimationFrame(() => {
                 void el.offsetHeight;
@@ -1423,6 +1451,9 @@ function App() {
         </div>
       </div>
 
+      {/* Fixed, full-width background under the title so tasks always scroll beneath */}
+      <div className="header-fixed-bg" aria-hidden="true" />
+
       {editingTitle ? (
         <input
           type="text"
@@ -1538,6 +1569,9 @@ function App() {
           </li>
         ))}
       </ul>
+
+      {/* Visual cover to hide the native scrollbar without changing layout */}
+      <div className="scrollbar-cover" aria-hidden="true" />
 
       {showDeleteModal && ReactDOM.createPortal(
         (
