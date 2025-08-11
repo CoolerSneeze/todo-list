@@ -203,9 +203,13 @@ body { -ms-overflow-style: none; scrollbar-width: none; }
   --dark-nudge-x: 0px; /* dark mode icon extra offset */
   --add-nudge-x: 0px;  /* add icon extra offset */
   --side1-nudge-x: 3px;
-  --side2-nudge-x: 3px;
+  --side2-nudge-x: 4px;
   --side3-nudge-x: 3px;
   --side4-nudge-x: 0px;
+  /* Per-emoji vertical fine-tuning (reduce/expand apparent gaps). Negative moves up. */
+  --side1-nudge-y: -5px; /* file folder (side-2) — tighten gap below dark mode */
+  --side2-nudge-y: -5px;  /* calandar (side-3) */
+  --side3-nudge-y: -5px;  /* gear (side-4) */
   /* Extra space on the right side of the stack to avoid visual clipping */
   --stack-bleed-right: 12px;
 }
@@ -249,6 +253,13 @@ body { -ms-overflow-style: none; scrollbar-width: none; }
 /* 3-bar icon horizontal alignment (responds to global and per-icon nudges) */
 .top-buttons .menu-btn img { 
   transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--menu-icon-nudge-x)));
+}
+/* Invert the three side images in dark mode (files, calendar, gear) */
+body.dark-mode .top-buttons .side-2 img.icon,
+body.dark-mode .top-buttons .side-3 img.icon,
+body.dark-mode .top-buttons .side-4 img.icon {
+  filter: invert(1);
+  transition: filter 200ms ease;
 }
 
 /* Collapsed: side buttons hidden off-canvas, add at top */
@@ -360,9 +371,9 @@ body { -ms-overflow-style: none; scrollbar-width: none; }
   transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--dark-nudge-x)));
 }
 /* Map manual emoji nudges to first/second/third emoji (side-2..side-4) */
-.side-2 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side1-nudge-x))); }
-.side-3 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side2-nudge-x))); }
-.side-4 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side3-nudge-x))); }
+.side-2 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side1-nudge-x))) translateY(var(--side1-nudge-y)); }
+.side-3 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side2-nudge-x))) translateY(var(--side2-nudge-y)); }
+.side-4 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side3-nudge-x))) translateY(var(--side3-nudge-y)); }
 
 /* Ensure vertical stack order: menu (top), then dark mode, then add */
 .top-buttons .menu-btn { order: 0; }
