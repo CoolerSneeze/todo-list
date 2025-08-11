@@ -22,6 +22,7 @@ function App() {
   const [editingTitle, setEditingTitle] = useState(false)
   const [draggedItem, setDraggedItem] = useState(null)
   const [showMenu, setShowMenu] = useState(false)
+  const [isCollapsing, setIsCollapsing] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   // Delete confirmation modal state
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -130,7 +131,21 @@ function App() {
   }, []);
 
   const toggleMenu = () => {
-    setShowMenu(!showMenu);
+    // Duration should match --stack-anim-duration in CSS (320ms) with a tiny buffer
+    const DURATION = 320; // ms
+    if (showMenu) {
+      // Begin retract: keep expanded while we run the retract keyframes
+      setIsCollapsing(true);
+      // After animation, actually collapse
+      window.clearTimeout(toggleMenu._t);
+      toggleMenu._t = window.setTimeout(() => {
+        setShowMenu(false);
+        setIsCollapsing(false);
+      }, DURATION + 20);
+    } else {
+      // Expand immediately
+      setShowMenu(true);
+    }
   }
 
   const addEmptyTodo = async () => {
@@ -1411,8 +1426,8 @@ function App() {
 
   return (
     <div className={`todo-app ${darkMode ? 'dark-mode' : ''}`}>
-      <div className="top-buttons">
-        <button className="menu-btn" aria-label="Menu">
+      <div className={`top-buttons ${showMenu ? 'expanded' : ''} ${isCollapsing ? 'collapsing' : ''}`}>
+        <button className="menu-btn" aria-label="Menu" onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleMenu(); }}>
           <img 
             src="/images/menu_button.svg" 
             alt="Menu" 
@@ -1422,6 +1437,45 @@ function App() {
           />
         </button>
         <div className="stacked-actions">
+          {/* Side stack (4 buttons): dark mode + 3 emoji */}
+          <button className="dark-mode-btn side-btn side-1" onClick={toggleDarkMode} title={darkMode ? 'Light mode' : 'Dark mode'}>
+            <img 
+              src={darkMode ? "/images/lightmode.svg" : "/images/darkmode.svg"} 
+              alt={darkMode ? "Switch to light mode" : "Switch to dark mode"} 
+              width="24" 
+              height="24"
+              className="mode-icon"
+            />
+          </button>
+          <button className="side-btn side-2" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} title="Files">
+            <img 
+              src="/images/filefolder.svg" 
+              alt="Files" 
+              width="24" 
+              height="24"
+              className="icon"
+            />
+          </button>
+          <button className="side-btn side-3" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} title="Calendar">
+            <img 
+              src="/images/calandar_icon.svg" 
+              alt="Calendar" 
+              width="24" 
+              height="24"
+              className="icon"
+            />
+          </button>
+          <button className="side-btn side-4" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} title="Settings">
+            <img 
+              src="/images/gear.svg" 
+              alt="Settings" 
+              width="24" 
+              height="24"
+              className="icon"
+            />
+          </button>
+
+          {/* Add button sits beneath the side stack */}
           <button 
             className="add-btn" 
             onClick={(e) => {
@@ -1437,15 +1491,6 @@ function App() {
               width="24" 
               height="24"
               className="add-icon"
-            />
-          </button>
-          <button className="dark-mode-btn" onClick={toggleDarkMode}>
-            <img 
-              src={darkMode ? "/images/lightmode.svg" : "/images/darkmode.svg"} 
-              alt={darkMode ? "Switch to light mode" : "Switch to dark mode"} 
-              width="24" 
-              height="24"
-              className="mode-icon"
             />
           </button>
         </div>

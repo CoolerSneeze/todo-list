@@ -175,22 +175,199 @@ body { -ms-overflow-style: none; scrollbar-width: none; }
 
 .top-buttons {
   position: fixed;
-  top: 20px;
-  z-index: 10000; /* ensure visible above header/title across stacking contexts */
-  left: 20px;
+  top: 12px;
+  left: 0;
   display: flex;
-  flex-direction: column; /* stack menu above actions */
-  align-items: flex-start;
-  gap: 12px;
+  flex-direction: column;
+  gap: var(--stack-gap);
+  z-index: 10000; /* stays above header */
+  overflow: visible;
 }
 
 /* Container to stack Add and Dark buttons vertically under the menu */
-.stacked-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
+
+/* Dimensions for side buttons */
+:root {
+  --side-btn-size: 40px; /* visual block size for each button row */
+  --stack-anim-duration: 320ms;
+  --stack-anim-ease: cubic-bezier(0.23, 1, 0.32, 1); /* very subtle/smooth */
+  --menu-nudge-x: -1px; /* align 3-bar with + icon */
+  --stack-gap: 0px; /* vertical gap between rows (tighter) */
+  --stack-count: 5; /* 4 side buttons + 1 add row */
+  --row-step: calc(var(--side-btn-size) + var(--stack-gap));
+  --emoji-nudge-x: -18px; /* extra left shift for emoji glyph optical center */
+  --stack-stagger: 24ms; /* faster delay step for cascade */
+  /* Manual per-button fine tuning (horizontal). Positive -> right, Negative -> left */
+  --stack-nudge-x: 12px; /* global offset for all icons in stack */
+  --menu-icon-nudge-x: 0px; /* extra offset for the 3-bar icon */
+  --dark-nudge-x: 0px; /* dark mode icon extra offset */
+  --add-nudge-x: 0px;  /* add icon extra offset */
+  --side1-nudge-x: 3px;
+  --side2-nudge-x: 3px;
+  --side3-nudge-x: 3px;
+  --side4-nudge-x: 0px;
+  /* Extra space on the right side of the stack to avoid visual clipping */
+  --stack-bleed-right: 12px;
 }
+
+.stacked-actions {
+  position: relative;
+  width: calc(var(--side-btn-size) + var(--stack-bleed-right));
+  /* constant height to avoid reflow: size*count + gap*(count-1) */
+  height: calc(var(--side-btn-size) * var(--stack-count) + var(--stack-gap) * (var(--stack-count) - 1));
+  overflow: visible; /* allow slide animations */
+  /* No height transition to avoid reflow stutter; transforms handle motion */
+  contain: layout paint; /* isolate layout/paint to prevent external reflow hitches */
+}
+
+/* Default state: only show Add + Menu (dark mode hidden off-canvas) */
+/* Position both action buttons absolutely within the stack */
+.stacked-actions .add-btn,
+.stacked-actions .dark-mode-btn {
+  position: absolute;
+  left: 0;
+  width: calc(var(--side-btn-size) + var(--stack-bleed-right));
+  height: var(--side-btn-size);
+  display: grid;
+  place-items: center;
+  will-change: transform, opacity;
+}
+
+/* Make menu button same size and centered for perfect alignment */
+.top-buttons .menu-btn {
+  width: calc(var(--side-btn-size) + var(--stack-bleed-right));
+  height: var(--side-btn-size);
+  display: grid;
+  place-items: center;
+  /* container stays un-shifted; icon below handles precise offset */
+}
+.top-buttons .menu-btn img,
+.stacked-actions .add-btn img,
+.stacked-actions .dark-mode-btn img {
+  display: block;
+}
+/* 3-bar icon horizontal alignment (responds to global and per-icon nudges) */
+.top-buttons .menu-btn img { 
+  transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--menu-icon-nudge-x)));
+}
+
+/* Collapsed: side buttons hidden off-canvas, add at top */
+.dark-mode-btn {
+  transform: translateX(calc(-1 * var(--side-btn-size))); /* base collapsed off-canvas */
+  opacity: 0; /* base collapsed opacity */
+  transform-origin: left center;
+  backface-visibility: hidden;
+  top: 0; /* middle slot shares top:0; add slides down to second slot */
+  /* promote to its own layer for smoother animation */
+  will-change: transform, opacity;
+  transform: translateX(calc(-1 * var(--side-btn-size))) translateZ(0);
+}
+/* Only control interactivity on collapsed */
+.top-buttons:not(.expanded) .dark-mode-btn { pointer-events: none; }
+.side-btn {
+  position: absolute;
+  left: 0;
+  width: calc(var(--side-btn-size) + var(--stack-bleed-right));
+  height: var(--side-btn-size);
+  display: grid;
+  place-items: center;
+  font-size: 24px; /* match SVG icon size */
+  line-height: 1;
+  will-change: transform, opacity;
+  transform: translateX(calc(-1 * var(--side-btn-size))) translateZ(0);
+  opacity: 0;
+  overflow: visible;
+}
+.top-buttons:not(.expanded) .side-btn { pointer-events: none; }
+.side-1 { top: calc(0 * var(--row-step)); }
+.side-2 { top: calc(1 * var(--row-step)); }
+.side-3 { top: calc(2 * var(--row-step)); }
+.side-4 { top: calc(3 * var(--row-step)); }
+.add-btn {
+  top: 0;
+  will-change: transform, opacity;
+  transform: translateY(0) translateZ(0);
+}
+
+/* Expanded: Menu on top, dark mode slides in to middle, add slides down to bottom */
+/* Height is constant; no override on expanded to avoid layout changes */
+.top-buttons.expanded .dark-mode-btn {
+  pointer-events: auto;
+  transform: translateX(0);
+  opacity: 1;
+  animation: dm-in var(--stack-anim-duration) var(--stack-anim-ease) both;
+}
+.top-buttons.expanded .side-btn {
+  pointer-events: auto;
+  transform: translateX(0);
+  opacity: 1;
+  animation: dm-in var(--stack-anim-duration) var(--stack-anim-ease) both;
+}
+.top-buttons.expanded .side-1 { animation-delay: calc(var(--stack-stagger) * 1); }
+.top-buttons.expanded .side-2 { animation-delay: calc(var(--stack-stagger) * 2); }
+.top-buttons.expanded .side-3 { animation-delay: calc(var(--stack-stagger) * 3); }
+.top-buttons.expanded .side-4 { animation-delay: calc(var(--stack-stagger) * 4); }
+.add-btn { transform: translateY(0); }
+.top-buttons.expanded .add-btn,
+.top-buttons.expanded .stacked-actions .add-btn {
+  /* Move below 4 side buttons */
+  transform: translateY(calc(4 * var(--row-step)));
+  animation: add-down var(--stack-anim-duration) var(--stack-anim-ease) both;
+  animation-delay: 0ms; /* move first so side buttons slide out after */
+}
+/* Retract with a tiny delay so dark-mode fade starts first */
+.top-buttons:not(.expanded) .add-btn {
+  animation: add-up var(--stack-anim-duration) var(--stack-anim-ease) both;
+}
+
+@keyframes dm-in {
+  0% { transform: translateX(calc(-1 * var(--side-btn-size))); opacity: 0; }
+  70% { transform: translateX(1px); opacity: 1; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+@keyframes dm-out {
+  0% { transform: translateX(0); opacity: 1; }
+  30% { transform: translateX(-1px); opacity: 1; }
+  100% { transform: translateX(calc(-1 * var(--side-btn-size))); opacity: 0; }
+}
+@keyframes add-down {
+  0% { transform: translateY(0); }
+  70% { transform: translateY(calc(4 * var(--row-step) + 1px)); }
+  100% { transform: translateY(calc(4 * var(--row-step))); }
+}
+@keyframes add-up {
+  0% { transform: translateY(calc(4 * var(--row-step))); }
+  30% { transform: translateY(calc(4 * var(--row-step) - 1px)); }
+  100% { transform: translateY(0); }
+}
+
+/* Apply retract animations */
+/* Drive retract via an explicit collapsing phase to avoid first-frame stutter */
+.top-buttons.expanded.collapsing .dark-mode-btn { animation: dm-out var(--stack-anim-duration) var(--stack-anim-ease) both; }
+.top-buttons.expanded.collapsing .side-btn { animation: dm-out var(--stack-anim-duration) var(--stack-anim-ease) both; }
+.top-buttons.expanded.collapsing .add-btn { animation: add-up var(--stack-anim-duration) var(--stack-anim-ease) both; }
+.top-buttons.expanded.collapsing .side-1 { animation-delay: calc(var(--stack-stagger) * 3); }
+.top-buttons.expanded.collapsing .side-2 { animation-delay: calc(var(--stack-stagger) * 2); }
+.top-buttons.expanded.collapsing .side-3 { animation-delay: calc(var(--stack-stagger) * 1); }
+.top-buttons.expanded.collapsing .side-4 { animation-delay: calc(var(--stack-stagger) * 0); }
+.top-buttons.expanded.collapsing .add-btn { animation-delay: calc(var(--stack-stagger) * 2); }
+.dark-mode-btn { transition: opacity 200ms ease-out; }
+/* Nudge icon contents (not containers) to align with menu, with manual per-button controls */
+.stacked-actions .add-btn .add-icon { 
+  transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--add-nudge-x)));
+}
+.stacked-actions .dark-mode-btn .mode-icon { 
+  transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--dark-nudge-x)));
+}
+/* Map manual emoji nudges to first/second/third emoji (side-2..side-4) */
+.side-2 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side1-nudge-x))); }
+.side-3 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side2-nudge-x))); }
+.side-4 .icon { transform: translateX(calc(var(--menu-nudge-x) + var(--stack-nudge-x) + var(--emoji-nudge-x) + var(--side3-nudge-x))); }
+
+/* Ensure vertical stack order: menu (top), then dark mode, then add */
+.top-buttons .menu-btn { order: 0; }
+.top-buttons .stacked-actions .dark-mode-btn { order: 1; }
+.top-buttons .stacked-actions .add-btn { order: 2; }
 
 .add-btn, .dark-mode-btn, .menu-btn, .close-menu-btn {
   background: none;
@@ -199,7 +376,7 @@ body { -ms-overflow-style: none; scrollbar-width: none; }
   cursor: pointer;
   padding: 4px 12px;
   transform-origin: center;
-  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: filter 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   backface-visibility: hidden;
   -webkit-font-smoothing: subpixel-antialiased;
   display: flex;
@@ -207,9 +384,7 @@ body { -ms-overflow-style: none; scrollbar-width: none; }
   justify-content: center;
 }
 
-.add-btn:hover, .dark-mode-btn:hover, .menu-btn:hover, .close-menu-btn:hover {
-  transform: scale(1.1);
-}
+.add-btn:hover, .dark-mode-btn:hover, .menu-btn:hover, .close-menu-btn:hover { filter: brightness(1.1); }
 
 .mode-icon, .add-icon, .delete-icon, .menu-icon, .close-icon {
   display: block;
